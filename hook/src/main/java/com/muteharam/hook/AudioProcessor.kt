@@ -61,3 +61,53 @@ class PassthroughProcessor : AudioProcessor {
         // Intentionally a no-op.
     }
 }
+
+/**
+ * Wraps a [StreamingWindowBuffer] to give real-model processors the
+ * larger context window they need, while still satisfying
+ * [AudioProcessor]'s "modify this exact buffer in place" contract that
+ * [AudioTrackHook] relies on. This is the class a real separation
+ * model should plug into -- implement `modelFn` to run inference on a
+ * [windowMs]-length chunk and return the same-length processed chunk.
+ *
+ * Defaults (120ms window / 60ms hop) were chosen and verified for
+ * correctness in prototyping specifically to keep total added latency
+ * (~150ms) low enough to stay close to audio/video sync -- see
+ * [StreamingWindowBuffer]'s doc comment for why that number matters.
+ * Don't increase windowMs without re-checking that tradeoff.
+ *
+ * Note: operates per-channel-interleaved-as-mono for now, i.e. it
+ * treats the interleaved stereo stream as one stream. That's fine for
+ * a model whose job is "pass through non-music, suppress music" where
+ * stereo-correctness isn't critical, but revisit if the chosen model
+ * needs true per-channel processing.
+ */
+class StreamingAudioProcessor(
+    sampleRateHz: Int,
+    windowMs: Int = 120,
+    hopMs: Int = 60,
+    private val modelFn: (FloatArray) -> FloatArray
+) : AudioProcessor {
+
+    private val buffer = StreamingWindowBuffer(
+        windowSamples = sampleRateHz * windowMs / 1000,
+        hopSamples = sampleRateHz * hopMs / 1000,
+        modelFn = modelFn
+    )
+
+    override fun process(
+        pcm16: ShortArray,
+        offset: Int,
+        length: Int,
+        sampleRateHz: Int,
+        channelCount: Int
+    ) {
+        val floats = FloatArray(length) { pcm16[offset + it] / 32768f }
+        buffer.push(floats, 0, length)
+        val processed = buffer.pull(length)
+        for (i in 0 until length) {
+            val clamped = processed[i].coerceIn(-1f, 1f)
+            pcm16[offset + i] = (clamped * 32767).toInt().toShort()
+        }
+    }
+}

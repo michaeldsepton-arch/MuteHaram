@@ -72,8 +72,34 @@ the package name in `HookConfig` is exactly right.
 
 ## Next step once hooking is confirmed working
 
-Swap `PassthroughProcessor` for a real implementation backed by a
-benchmarked separation model (see the main project README/chat for
-the model research — likely a small ONNX export run via ONNX Runtime
-Mobile). Benchmark its per-chunk latency in isolation first; only wire
-it into this hook once you know it's fast enough not to stutter audio.
+Swap `PassthroughProcessor` for a `StreamingAudioProcessor` backed by
+a real model (see `AudioProcessor.kt` and `StreamingWindowBuffer.kt`
+doc comments for how to wire one in). Benchmark its per-chunk
+inference latency in isolation first; it must run faster than the hop
+size (default 60ms) or output underruns into silence.
+
+## Important constraint discovered while building the buffering layer
+
+Because this hook modifies the audio buffer **synchronously, in
+place** right before `AudioTrack.write()` actually runs, any delay it
+introduces is audio-only — there's no matching delay on the video
+side, since we don't control video rendering. That directly trades
+off against audio/video sync.
+
+This was verified concretely in `research/windowing_prototype.py`
+(a Python prototype of the chunking/overlap-add math, round-trip
+tested with zero error and zero boundary artifacts before porting to
+Kotlin): a 1-second analysis window — the size many offline
+separation models like Demucs are designed around — would add
+roughly **1.25 seconds** of one-way audio lag. That's clearly audible
+desync. A much smaller window (**120ms, ~150ms total latency** in the
+current defaults) is a far more plausible budget to stay close to
+imperceptible.
+
+**This is now a hard model-selection constraint**, not a tuning
+nice-to-have: whatever separation model gets plugged in has to be one
+designed for short-context, low-latency streaming operation (see the
+real-time source-separation research referenced earlier in the
+project notes — e.g. the Hybrid Spectrogram-TasNet line of work), not
+a general-purpose offline model. Keep this in mind when picking/
+benchmarking a model next.

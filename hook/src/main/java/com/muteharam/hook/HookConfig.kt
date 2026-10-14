@@ -21,7 +21,19 @@ object HookConfig {
     /**
      * Swap this for a real separation model once it's built and
      * benchmarked. Passthrough proves the hook pipeline itself works
-     * without adding processing risk on top.
+     * without adding processing risk (or latency) on top first.
+     *
+     * Once a model is ready, switch to something like:
+     *
+     *   StreamingAudioProcessor(sampleRateHz = 44100) { windowChunk ->
+     *       // run inference on windowChunk (120ms of float samples,
+     *       // -1f..1f range), return the processed chunk of the same
+     *       // length with music suppressed.
+     *       realModel.runInference(windowChunk)
+     *   }
+     *
+     * See StreamingAudioProcessor's doc comment for the latency
+     * budget that window size needs to respect.
      */
     val processor: AudioProcessor = PassthroughProcessor()
 }
