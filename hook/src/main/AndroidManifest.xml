@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:icon="@android:drawable/ic_menu_info_details"
+        android:theme="@android:style/Theme.DeviceDefault">
+
+        <!-- LSPosed/Xposed module declaration. None of this does
+             anything unless this APK is installed AND then explicitly
+             enabled, with target apps scoped, inside the LSPosed
+             Manager app. Just installing it is not enough. -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="Intercepts AudioTrack.write() in target apps to (eventually) filter music out in real time." />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="54" />
+
+        <!-- No launcher activity on purpose: this module has no UI of
+             its own, it's configured entirely from LSPosed Manager. -->
+
+    </application>
+</manifest>
