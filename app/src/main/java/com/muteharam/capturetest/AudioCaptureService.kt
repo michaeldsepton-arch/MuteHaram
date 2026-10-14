@@ -47,6 +47,13 @@ class AudioCaptureService : Service() {
     @Volatile private var capturing = false
     private var captureThread: Thread? = null
 
+    // Track the best signal seen all session so a single glance at the
+    // notification (e.g. while another app is fullscreen) tells you
+    // whether capture ever worked, not just this instant.
+    @Volatile private var peakDb: Double = -120.0
+    @Volatile private var everSawSignal: Boolean = false
+    private var lastNotifyUpdateMs: Long = 0L
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -106,7 +113,10 @@ class AudioCaptureService : Service() {
                 if (read > 0) {
                     val rmsDb = computeRmsDb(buffer, read)
                     val hasSignal = rmsDb > -60.0 // rough "not silence" threshold
+                    if (hasSignal) everSawSignal = true
+                    if (rmsDb > peakDb) peakDb = rmsDb
                     levelListener?.invoke(rmsDb, hasSignal)
+                    maybeUpdateNotification(rmsDb, hasSignal)
                 }
             }
         }
@@ -124,7 +134,10 @@ class AudioCaptureService : Service() {
         return 20 * log10(rms / Short.MAX_VALUE)
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(
+        currentDb: Double? = null,
+        hasSignal: Boolean = false
+    ): Notification {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
@@ -134,12 +147,32 @@ class AudioCaptureService : Service() {
             val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(channel)
         }
+
+        val contentText = if (currentDb == null) {
+            "Waiting for audio... switch to the app you're testing"
+        } else {
+            val now = if (hasSignal) "SIGNAL (%.0f dB)".format(currentDb) else "silence"
+            val everText = if (everSawSignal) "yes, peak %.0f dB".format(peakDb) else "not yet"
+            "Now: $now   |   Ever detected signal this session: $everText"
+        }
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("MuteHaram capture test running")
-            .setContentText("Capturing device playback for testing")
+            .setContentText(contentText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(contentText))
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setOngoing(true)
             .build()
+    }
+
+    private fun maybeUpdateNotification(rmsDb: Double, hasSignal: Boolean) {
+        val now = System.currentTimeMillis()
+        // Throttle to avoid hammering the notification manager — a few
+        // updates per second is plenty for a human glancing at the shade.
+        if (now - lastNotifyUpdateMs < 700) return
+        lastNotifyUpdateMs = now
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(NOTIF_ID, buildNotification(rmsDb, hasSignal))
     }
 
     override fun onDestroy() {

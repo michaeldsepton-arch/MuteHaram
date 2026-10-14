@@ -36,13 +36,21 @@ app opted out) or working (you'll see the level move with the audio).
    capture — you'll see a persistent notification while it's running).
 4. Switch to the app you want to test (YouTube/ReVanced, CineHD, etc.)
    and start playing something.
-5. Come back to MuteHaram, or just watch the notification — the level
-   readout updates live:
-   - **Level rising above ~-60 dB with [SIGNAL]** → capture is working
-     for that content. You're clear to build the real pipeline against it.
-   - **Flat at -120 dB / [silence]** while audio is clearly playing
-     elsewhere → that stream is blocked, either DRM-protected output
-     (not overridable without root) or the app explicitly set
+5. **If the app you're testing has no picture-in-picture mode** (CineHD,
+   for example), you won't be able to see MuteHaram's screen while it
+   plays — pull down the notification shade instead. The persistent
+   notification updates live with the current level and also tracks
+   whether it *ever* saw signal this session, so a quick swipe-down and
+   swipe-back-up is enough to check without interrupting playback:
+   - `Now: SIGNAL (-22 dB)` / `Now: silence`
+   - `Ever detected signal this session: yes, peak -18 dB` / `not yet`
+6. Reading it:
+   - **Any "SIGNAL" reading, or "yes" on the peak summary** → capture is
+     working for that content. You're clear to build the real pipeline
+     against it.
+   - **Stays on "silence" / "not yet" for the whole time audio is
+     clearly playing** → that stream is blocked, either DRM-protected
+     output (not overridable without root) or the app explicitly set
      `allowAudioPlaybackCapture="false"`.
 
 Test both apps separately — results can differ by app, and even within
