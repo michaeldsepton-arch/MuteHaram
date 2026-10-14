@@ -37,7 +37,59 @@ class AudioTrackHook : IXposedHookLoadPackage {
         hookShortArrayWrite(lpparam)
         hookByteArrayWrite(lpparam)
         hookByteBufferWrite(lpparam)
+
+        hookClockShift()
     }
+
+    /**
+     * Video re-sync without touching any video class. Players slave video
+     * frame release to the audio clock, which they derive from
+     * AudioTrack.getTimestamp()/getPlaybackHeadPosition(). Our processor
+     * plays audio [AudioProcessor.latencyMs] late, so we report the playback
+     * position that much *smaller*: the player concludes audio is behind and
+     * releases video frames that much later. Both calls are shifted
+     * consistently because ExoPlayer cross-checks one against the other.
+     * Side effect: seek bar / subtitles read ~latencyMs behind the picture.
+     */
+    private fun hookClockShift() {
+        try {
+            XposedHelpers.findAndHookMethod(
+                AudioTrack::class.java,
+                "getPlaybackHeadPosition",
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val track = param.thisObject as AudioTrack
+                        val shift = shiftFrames(track)
+                        if (shift > 0) {
+                            param.result = maxOf(0, (param.result as Int) - shift)
+                        }
+                    }
+                }
+            )
+            XposedHelpers.findAndHookMethod(
+                AudioTrack::class.java,
+                "getTimestamp",
+                android.media.AudioTimestamp::class.java,
+                object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        if (param.result != true) return
+                        val track = param.thisObject as AudioTrack
+                        val ts = param.args[0] as android.media.AudioTimestamp
+                        val shift = shiftFrames(track)
+                        if (shift > 0) {
+                            ts.framePosition = maxOf(0L, ts.framePosition - shift)
+                        }
+                    }
+                }
+            )
+            Log.i(TAG, "Hooked AudioTrack clock (getPlaybackHeadPosition/getTimestamp)")
+        } catch (t: Throwable) {
+            Log.w(TAG, "clock-shift hooks failed", t)
+        }
+    }
+
+    private fun shiftFrames(track: AudioTrack): Int =
+        (HookConfig.processor.latencyMs.toLong() * track.sampleRate / 1000).toInt()
 
     private fun hookShortArrayWrite(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {

@@ -5,7 +5,7 @@ so work can resume cleanly from a different session/tool (e.g. picking
 this up in Claude Code on your own machine, with full internet access
 this sandbox doesn't have).
 
-**Last updated:** 2026-10-14, build-6
+**Last updated:** 2026-10-14, build-6 + model research (see "Model research" section)
 
 ## Sequencing decision: validate cheap before building expensive (important, read this first)
 
@@ -37,6 +37,90 @@ out acceptable, B is unnecessary extra complexity. If A's quality
 turns out bad, that's exactly the data needed to justify building B
 next, rather than guessing now. Don't start on video-hooking (B) until
 A has been tried with a real model and heard, not just reasoned about.
+
+---
+
+## Model research + Step-A experiment results (2026-10-14, Claude Code on PC)
+
+**No ready-made causal/streaming music-vs-speech model exists.** HS-TasNet
+(the low-latency research line) only has unofficial code repos
+(lucidrains/HS-TasNet etc.), no pretrained weights, and was trained on
+MUSDB stems (vocals/drums/bass/other), not cinematic dialogue/music/effects.
+
+**Best pretrained find: TIGER-DnR** (`JusperLee/TIGER-DnR`, Apache-2.0).
+Three 1.41M-param band-split models (dialogue / effects / music) trained on
+the Divide-and-Remaster cinematic dataset -- the right task. An Android
+LiteRT port exists (`litert-community/TIGER-DnR-LiteRT`) but it is fixed at
+12 s chunks (~4.5 s/chunk/graph on a Pixel 8a GPU), i.e. not usable live as-is.
+
+**Experiment** (`hook/research/tiger_window_eval.py`): run TIGER's music
+model with the same overlap-discard windowing as `StreamingWindowBuffer`,
+score vs its own full-context output (SI-SDR; higher = closer to long-context
+quality). 20 s clip, GTX 1070 / 12-thread CPU:
+
+| window / hop | music SI-SDR | CPU time per window | hop budget |
+|---|---|---|---|
+| 120 / 60 ms | ~0 dB (broken) | 595 ms | 60 ms |
+| 250 / 125 ms | 0.6-2.6 dB (broken) | 674 ms | 125 ms |
+| 500 / 250 ms | ~8 dB (poor) | 960 ms | 250 ms |
+| 1 s / 500 ms | 11-13 dB (usable?) | 1885 ms | 500 ms |
+| 2 s / 1 s | 17-21 dB (good) | 2856 ms | 1000 ms |
+
+**Conclusions:**
+1. **Option A (120 ms, audio-only) is dead with this pretrained model** --
+   output is essentially unrelated to the long-context result. (Caveat: the
+   model was never trained on short windows; fine-tuning on short crops of
+   DnR could help, but that's a training project, not a download.)
+2. **Quality needs >= ~1 s of context -> Option B** (video re-sync) becomes
+   necessary, since ~1.5 s of audio lag is unwatchable otherwise.
+3. **Compute is the harder wall:** even on a desktop CPU, PyTorch runs at
+   ~4x *slower* than real time at 1 s / 500 ms. A phone will be slower.
+   Needs ONNX/LiteRT + GPU/NPU + quantisation, and possibly a smaller
+   model, before real-time is plausible. GTX 1070 timing was ~340 ms flat
+   per call (kernel-launch bound), so GPU is real-time at >= 1 s hops only.
+4. Caveat: scores are vs the model's own long-context output, not clean
+   ground truth, and only one 20 s clip was tried.
+
+**Options from here (user decision needed):** (a) fine-tune TIGER-music on
+short windows (needs DnR dataset ~tens of GB + GPU time; 1070 is weak),
+(b) go Option B with ~1-2 s windows and pursue ExoPlayer video-delay hook +
+on-device LiteRT/ONNX speed work, (c) drop real-time and do offline
+processing (separate the file/stream ahead of playback) instead.
+
+### Option B progress (2026-10-14, later)
+
+**Speed work (ONNX)** -- `hook/research/tiger_onnx.py` exports the music
+network (STFT/iSTFT kept outside the graph) to ONNX; matches PyTorch to
+~96 dB SI-SDR. Raw numbers in `hook/research/onnx_bench.json`. Desktop CPU:
+
+| window | ORT fp32 | ORT int8 (dynamic) |
+|---|---|---|
+| 1 s | 1870 ms (RTF 1.87), exact | 14 s (RTF 14), 29 dB -- worse |
+| 2 s | 4666 ms (RTF 2.33), exact | 28 s, 21 dB -- worse |
+
+- ONNX Runtime fp32 is no faster than PyTorch; **dynamic int8 is both slower
+  and lossy -- dead end.** Needed patches: `adaptive_avg_pool1d` with
+  non-divisible sizes exported as a fixed matmul (in the script).
+- **Real-time looks reachable only on GPU/NPU:** a third party measured the
+  LiteRT fp16 port at ~4.5 s per 12 s chunk (RTF ~0.37) on a Pixel 8a GPU,
+  full GPU residency. Only the *music* graph is needed (1 of 3). At 50%
+  window overlap that implies RTF ~0.75 -- tight but plausible on Pixel 9 Pro.
+  Unverified; the shipped port is fixed at 12 s, so it must be re-exported
+  at 1-2 s (their converter: `litert_torch`) and benchmarked on the real phone.
+  Galaxy S26 NPU run crashed per their card; Tab S7 is a much older GPU.
+
+**Video re-sync** -- no need to hook video classes (see `hook/README.md`).
+Players slave video to the AudioTrack clock, so `AudioTrackHook` now shifts
+`getPlaybackHeadPosition()`/`getTimestamp()` back by the processor's
+`latencyMs` (new `AudioProcessor.latencyMs`; `StreamingAudioProcessor`
+reports (window+hop)/2). Written but **not compiled or tested** (CI builds it
+on push; behaviour needs a rooted device). Fallback: hook
+`MediaCodecVideoRenderer` frame release.
+
+**Next steps, in order:** (1) CI build passes; (2) root Pixel + LSPosed, test
+clock-shift with a fake-delay processor; (3) re-export TIGER-music to LiteRT
+at 1-2 s fixed windows with in-graph STFT and time it on the Pixel GPU;
+(4) integrate (STFT/iSTFT in Kotlin, LiteRT GPU) and listen to quality.
 
 ---
 

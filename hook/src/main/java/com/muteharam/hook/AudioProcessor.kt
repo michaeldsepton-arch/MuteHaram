@@ -27,6 +27,16 @@ package com.muteharam.hook
  */
 interface AudioProcessor {
     /**
+     * How much later (in ms) this processor's output plays relative to its
+     * input. [AudioTrackHook] subtracts this from the AudioTrack's reported
+     * playback position so the player's audio clock -- which ExoPlayer and
+     * MediaPlayer slave video rendering to -- runs behind by the same amount,
+     * which delays the video to match (see hook/README.md, "Video re-sync").
+     * 0 for processors that don't delay audio.
+     */
+    val latencyMs: Int get() = 0
+
+    /**
      * @param pcm16 interleaved 16-bit PCM samples, modified in place.
      * @param offset start index into pcm16 for this buffer.
      * @param length number of shorts (not bytes) valid starting at offset.
@@ -88,6 +98,11 @@ class StreamingAudioProcessor(
     hopMs: Int = 60,
     private val modelFn: (FloatArray) -> FloatArray
 ) : AudioProcessor {
+
+    // First output sample needs (window - margin) = (window + hop) / 2 of
+    // real input, so the whole output stream trails the input by that much
+    // (inference time comes on top while it's synchronous on the write thread).
+    override val latencyMs: Int = (windowMs + hopMs) / 2
 
     private val buffer = StreamingWindowBuffer(
         windowSamples = sampleRateHz * windowMs / 1000,

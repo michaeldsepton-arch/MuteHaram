@@ -103,3 +103,21 @@ real-time source-separation research referenced earlier in the
 project notes — e.g. the Hybrid Spectrogram-TasNet line of work), not
 a general-purpose offline model. Keep this in mind when picking/
 benchmarking a model next.
+
+## Video re-sync (Option B: ~1-2 s windows)
+
+Experiments (see HANDOFF.md) showed short windows (<=250 ms) break the
+pretrained separator, so the plan is a 1-2 s window and ~1 s of audio delay.
+Instead of hooking video classes, `AudioTrackHook.hookClockShift()` makes
+the *audio clock* report `AudioProcessor.latencyMs` less than it really is
+(`getPlaybackHeadPosition()` and `getTimestamp()` are shifted together).
+ExoPlayer/MediaPlayer slave video frame release to that clock, so the video
+is delayed by the same amount and stays lip-synced. Side effect: seek bar and
+subtitles read ~latencyMs behind the picture.
+
+**Unverified on a device** -- it's the first thing to test once the hook is
+installed: play a clip with a passthrough processor that reports a fake
+`latencyMs` and a delay buffer, and confirm picture and sound stay aligned.
+Fallback if a player ignores the AudioTrack clock: hook the video renderer's
+release time (`MediaCodecVideoRenderer.processOutputBuffer` / release-time
+calculation), which is player-library- and obfuscation-dependent.
