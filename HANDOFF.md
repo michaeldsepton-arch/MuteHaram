@@ -7,6 +7,37 @@ this sandbox doesn't have).
 
 **Last updated:** 2026-10-14, build-6
 
+## Sequencing decision: validate cheap before building expensive (important, read this first)
+
+There are really two viable end-states, not the four I originally
+listed (an earlier version of this doc had a confused "option 4" that
+was just a restatement of the video-delay idea -- ignore any mention
+of a 4th option elsewhere):
+
+- **A. Short context window (~120ms), audio-only, no video hooking.**
+  Keeps latency low (~150ms) without touching video at all. Quality
+  ceiling unknown -- shorter context generally means a harder time
+  separating music from speech well, but *how much* worse is
+  unconfirmed.
+- **B. Longer context window (better quality, e.g. 500ms-1s) +
+  also hook video frame release timing to re-sync.** Technically
+  reachable with the same hooking technique already used for audio
+  (ExoPlayer releases video frames through a timed call, same class of
+  interception as AudioTrack.write()) -- not categorically harder, but
+  more surface area (a different class/method to hook, possibly
+  player-library-dependent, one more thing that breaks on app
+  updates), and real engineering on top of what exists now.
+
+**Decision: build and validate A first, before investing in B.** The
+actual unknown blocking this whole project isn't "can we hook video
+too" -- it's "does a fast enough model even separate well at 120ms of
+context." That's unconfirmed either way, and it's the thing that
+determines whether B is worth building at all. If A's quality turns
+out acceptable, B is unnecessary extra complexity. If A's quality
+turns out bad, that's exactly the data needed to justify building B
+next, rather than guessing now. Don't start on video-hooking (B) until
+A has been tried with a real model and heard, not just reasoned about.
+
 ---
 
 ## The goal
