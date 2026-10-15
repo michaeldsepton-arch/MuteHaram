@@ -82,17 +82,23 @@ chrome.tabs.onUpdated.addListener((id, info) => {
   if (info.status === "loading" && info.url) { found[id] = []; subsFound[id] = []; recent[id] = []; } // new page
 });
 
-function pickCandidate(tabId) {
+function candidateList(tabId) {
   let list = found[tabId] || [];
   if (!list.length) {
     // nothing attributed to this tab: use what web workers fetched in the last 3 minutes
     list = orphans.filter((c) => Date.now() - c.t < 180000);
   }
-  if (!list.length) return null;
   const rank = (u) => (/\.m3u8/i.test(u) ? 3 : /\.mpd/i.test(u) ? 2 : 1);
-  const isMaster = (u) => !/(chunk|segment|media_|index_|-v\d|_\d+p)/i.test(u);
+  // main playlists first; audio-only / subtitle / single-quality lists last
+  const looksMain = (u) =>
+    /(master|index\.m3u8|playlist\.m3u8|manifest)/i.test(u) ? 2 :
+    /(\/audio\/|\/subs?\/|subtitle|_audio|chunk|segment|media_|-v\d|_\d+p)/i.test(u) ? 0 : 1;
   return [...list].sort((a, b) =>
-    rank(b.url) - rank(a.url) || isMaster(b.url) - isMaster(a.url) || b.t - a.t)[0];
+    rank(b.url) - rank(a.url) || looksMain(b.url) - looksMain(a.url) || b.t - a.t);
+}
+
+function pickCandidate(tabId) {
+  return candidateList(tabId)[0] || null;
 }
 
 async function pagePosition(tabId) {
@@ -156,7 +162,12 @@ async function openInPlayer(tab, pip) {
   } else {
     const c = pickCandidate(tab.id);
     if (c) {
-      payload = { url: c.url, headers: c.headers, referer: c.headers.Referer || tab.url, start, page: tab.url,
+      const alts = candidateList(tab.id).map((x) => x.url).filter((u) => u !== c.url).slice(0, 6);
+      // The audio the viewer picked (e.g. English): the page requested that audio-only playlist last.
+      // The player shows the picture from the main playlist but the music is removed from THIS audio.
+      const audioNow = (found[tab.id] || []).filter((x) => /(\/audio[\/_-]|[_-]audio|audio[_-])/i.test(x.url))
+        .sort((x, y) => y.t - x.t)[0];
+      payload = { url: c.url, alts, audio: audioNow ? audioNow.url : undefined, headers: c.headers, referer: c.headers.Referer || tab.url, start, page: tab.url,
                   title: tab.title, pip, subs: subsFound[tab.id] || [] };
     } else {
       // No stream address seen. Save a report of what the page loaded (so it can be examined)

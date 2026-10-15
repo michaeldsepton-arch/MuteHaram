@@ -23,6 +23,65 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DIRECT = re.compile(r"\.(m3u8|mpd|mp4|m4v|webm|mkv|mov|ts|mp3|m4a|flac|ogg|opus)(\?|#|$)", re.I)
 
 
+def clean_headers(headers):
+    """Only the headers a browser would send for a media request."""
+    keep = {"user-agent", "referer", "origin", "cookie", "authorization", "accept", "accept-language"}
+    return {k: v for k, v in (headers or {}).items() if k.lower() in keep}
+
+
+def fetch_head(url, headers, nbytes=4096, timeout=12):
+    """(status, content_type, first bytes) of a URL, fetched the way the player would. Never raises."""
+    import urllib.error
+    import urllib.request
+    req = urllib.request.Request(url, headers={**{"User-Agent": "Mozilla/5.0"}, **clean_headers(headers)})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.headers.get("Content-Type", ""), resp.read(nbytes)
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(300)
+        except Exception:
+            body = b""
+        return e.code, (e.headers.get("Content-Type", "") if e.headers else ""), body
+    except Exception as e:
+        return None, "", str(e).encode()
+
+
+def classify(url, headers):
+    """Look at what the server really returns for a stream address.
+    -> dict(kind, note): kind is master / media / video / http_error / web_page / unreadable / other."""
+    from urllib.parse import urljoin
+    status, ctype, data = fetch_head(url, headers)
+    if status is None:
+        return dict(kind="unreadable", note="could not connect (" + data.decode("utf-8", "replace")[:80] + ")")
+    if status >= 400:
+        return dict(kind="http_error", note=f"the server answered {status}")
+    if data.lstrip().startswith(b"#EXTM3U"):
+        text = data.decode("utf-8", "replace")
+        if "#EXT-X-STREAM-INF" in text:
+            return dict(kind="master", note="main playlist")
+        # a playlist of video/audio pieces: check what the first piece looks like
+        first = next((ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")), None)
+        note = "playlist"
+        if first:
+            st, ct, seg = fetch_head(urljoin(url, first), headers, nbytes=16)
+            if st is None or st >= 400:
+                note = f"playlist, but its first piece is not available ({'error ' + str(st) if st else 'no connection'})"
+            elif seg[:1] == b"G" or seg[4:8] in (b"ftyp", b"styp", b"moof") or seg[:3] == b"ID3" or seg[:2] == b"\xff\xf1":
+                note = "playlist with normal pieces"
+            elif seg[:4] == b"\x89PNG" or seg[:2] == b"\xff\xd8" or seg[:3] == b"GIF":
+                note = ("playlist whose video pieces are DISGUISED AS PICTURES (the site hides its video "
+                        "from ordinary players)")
+            elif seg[:1] == b"<":
+                note = "playlist whose first piece is a web page, not video (blocked or login needed?)"
+        return dict(kind="media", note=note)
+    if data[:1] == b"<":
+        return dict(kind="web_page", note="the address returns a web page, not video")
+    if "video" in ctype.lower() or data[4:8] in (b"ftyp",) or data[:4] == b"\x1aE\xdf\xa3":
+        return dict(kind="video", note="video file")
+    return dict(kind="other", note=f"unrecognised content ({ctype or 'no type'})")
+
+
 def ui_error(message):
     """Tell the user about a problem even when we were started without a console
     (by the browser extension's helper): a message box on Windows."""
@@ -113,6 +172,11 @@ def run(argv=None):
                     help="start in a small always-on-top corner window (press P in the player to toggle)")
     ap.add_argument("--sub-langs", default=S["sub_langs"],
                     help='caption languages to fetch for YouTube, yt-dlp style, e.g. "en.*,ar.*" or "all"')
+    ap.add_argument("--audio-src", metavar="URL",
+                    help="audio-only stream the viewer chose (e.g. English); the music is removed from this, "
+                         "the picture comes from the main address")
+    ap.add_argument("--alt", action="append", default=[], metavar="URL",
+                    help="other stream addresses the page used (the best one is chosen)")
     ap.add_argument("--page", help="address of the web page (fallback: yt-dlp tries to find the stream itself)")
     ap.add_argument("--sub", action="append", default=[], metavar="URL",
                     help="caption file (.vtt/.srt/...) to load (repeatable)")
@@ -154,7 +218,30 @@ def run(argv=None):
             raise
         return sess
 
-    attempts = [("the stream address", lambda: r)]
+    # Look at every candidate address and try the most promising first: a main ("master") playlist
+    # beats a media playlist (e.g. audio-only) beats anything else.
+    notes = {}
+    order = [a.url]
+    if is_direct(a.url) and a.url.startswith(("http://", "https://")):
+        order = [a.url] + [u for u in a.alt if u != a.url][:5]
+        rank = {"master": 0, "video": 1, "media": 2}
+        for u in order:
+            notes[u] = classify(u, headers)
+            log(f"candidate {u[:110]}: {notes[u]['kind']} - {notes[u]['note']}")
+        order.sort(key=lambda u: rank.get(notes[u]["kind"], 9))
+    attempts = []
+    if a.audio_src and a.audio_src.startswith(("http://", "https://")):
+        notes[a.audio_src] = classify(a.audio_src, headers)
+        log(f"chosen audio {a.audio_src[:110]}: {notes[a.audio_src]['kind']} - {notes[a.audio_src]['note']}")
+        attempts.append(("the audio you selected",
+                         lambda: resolve(a.audio_src, headers, cfg, log, a.sub_langs)))
+    for u in order:
+        if u == a.url:
+            attempts.append(("the stream address", lambda: r))
+        else:
+            attempts.append((f"another stream address ({u[-40:]})",
+                             lambda u=u: resolve(u, headers, cfg, log, a.sub_langs)))
+    best_master = next((u for u in order if notes.get(u, {}).get("kind") == "master"), None)
     if a.page and is_direct(a.url):
         attempts.append(("the web page (yt-dlp)", lambda: resolve(a.page, headers, cfg, log, a.sub_langs)))
     errors = []
@@ -167,7 +254,14 @@ def run(argv=None):
             import traceback
             traceback.print_exc()
             errors.append(f"{label}: {ex}")
+            for u, n in notes.items():
+                if n["kind"] not in ("master", "video") and n["note"] not in " ".join(errors):
+                    errors.append(f"[{u[-45:]} -> {n['note']}]")
             problem = RuntimeError(" ; ".join(errors))
+    if best_master and r["mpv_url"] != best_master:
+        r["mpv_url"] = best_master
+    elif a.audio_src and session is not None and r["mpv_url"] == a.audio_src:
+        r["mpv_url"] = a.url             # never show an audio-only playlist as "the video"
     if session is not None:
         srv = make_server(session)
         audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"

@@ -96,6 +96,11 @@ class Handler(BaseHTTPRequestHandler):
             start = float(req.get("start") or 0)
             if start > 1:
                 cmd += ["--start", str(start)]
+            if req.get("audio") and str(req["audio"]).lower().startswith(("http://", "https://")):
+                cmd += ["--audio-src", str(req["audio"])]
+            for alt in (req.get("alts") or [])[:6]:
+                if str(alt).lower().startswith(("http://", "https://")):
+                    cmd += ["--alt", str(alt)]
             if req.get("page") and str(req["page"]).lower().startswith(("http://", "https://")):
                 cmd += ["--page", str(req["page"])]
             for sub in (req.get("subs") or [])[:6]:
