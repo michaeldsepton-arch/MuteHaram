@@ -5,7 +5,7 @@ so work can resume cleanly from a different session/tool (e.g. picking
 this up in Claude Code on your own machine, with full internet access
 this sandbox doesn't have).
 
-**Last updated:** 2026-10-14 night: no root; video re-sync verified in YouTube AND CineHD (native AAudio hook). Next: the model.
+**Last updated:** 2026-10-15 overnight: PC player, Wi-Fi server, Android pipeline/engine built (see "Overnight build"). Start with MORNING.md.
 
 ## Sequencing decision: validate cheap before building expensive (important, read this first)
 
@@ -226,6 +226,41 @@ pipeline (resample to 44.1k, STFT-free since the graph has the DFT in it, iSTFT 
 overlap-add in C++, LiteRT GPU on a worker thread, fixed output latency L, fall
 back to the original audio if a window is late) wired into the AAudio hook and
 the Java hook.
+
+### Overnight build (2026-10-15): three products, all pushed + CI green
+
+Start with `MORNING.md` (test list) and `ANDROID.md` (modes). Architecture decisions:
+
+* **PC player** (`pc/`): ffmpeg decodes the media, a worker runs the TIGER *music* net over sliding
+  10 s windows (hop 6 s, centre kept, music estimate subtracted per channel on GPU) and a local HTTP
+  server serves the result as a seekable virtual WAV (`/audio.wav`, Range support, blocks produced on
+  demand, seeks re-prioritise). mpv plays the page/video URL with `--audio-file=` pointing at it; a
+  Lua script selects the external track. Slow AI => falls back to the ORIGINAL audio per block.
+  YouTube resolved via yt-dlp (mpv's ytdl hook with video-only format), other sites via direct stream
+  URL + headers sent by the Chrome/Edge extension (`pc/extension`, talks to `muteharam_pc.helper`
+  on 127.0.0.1:47800; only accepts extension origins and http(s) URLs). `pc/setup_pc.py` +
+  `requirements.txt` provision a fresh machine (venv, torch CUDA/CPU by GPU, weights, ffmpeg, mpv via
+  7zr, yt-dlp); tested from an empty folder. Vendored model code in `pc/muteharam_pc/tiger` (torch+numpy only).
+* **Wi-Fi** (`pc/muteharam_pc/stream_server.py`, port 47801, token in `pc/wifi_token.txt`): protocol in the
+  module docstring; golden bytes tested in Python and Kotlin; the Kotlin pipeline is tested against the
+  real server in the CI `integration` job (CPU torch).
+* **Android pipeline** (`separation/`, pure Kotlin, JUnit in CI): `SeparationPipeline` delays the stream by a
+  FIXED latency L = hop + margin + AI budget, worker thread estimates music per block from a window with
+  margins (stateless resampling to 44.1k, `MusicEstimator` -> music waveform), output =
+  original(n-L) - music(n-L), un-cleaned original when the AI is late/failed. `RemoteEstimator` = Wi-Fi
+  client. The hook's `ModeProcessor` switches live (`muteharam_mode` test|remote|local; default `test`
+  = previous verified behaviour); `SeparationHost` keeps one pipeline per stream; AAudio path: C++
+  callback -> JNI `NativeBridge.onAudioFloat` (direct ByteBuffer, in place). Player clock shift = L.
+* **On-device** = separate app `engine/` (LiteRT GPU, model re-timed in CI to T=128/176/256), a foreground
+  service speaking the same protocol on 127.0.0.1:47801; hook `local` mode just points at it. Chosen over
+  loading LiteRT inside the patched apps (class-loader/native-lib problems, +50 MB per patched app).
+* Galaxy Tab S7 FE (SM-T736B, Adreno 619) measured 1.61 s compute per audio second on the 12 s model: cannot
+  run it on-device; use Wi-Fi. Pixel 9 Pro: 0.38 (12 s chunk), expect ~0.75 for 2 s windows.
+
+**Unverified on hardware:** everything Android in modes remote/local; Chromium's reaction to a ~3 s clock
+shift; ExoPlayer's write-ahead eating the AI's time budget (raise `muteharam_budget_ms`); Engine app on a GPU.
+**Ideas not done:** Firefox extension; per-stream seek handling beyond flush/stop/release; int16 AAudio
+streams in separation mode; stereo mask instead of subtraction on Android (PC already runs L/R separately).
 
 ---
 

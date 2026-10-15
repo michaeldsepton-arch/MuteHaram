@@ -1,75 +1,44 @@
-# MuteHaram — Audio Capture Test Harness
+# MuteHaram
 
-A minimal Android app to empirically test whether `AudioPlaybackCapture`
-(Android 10+) can actually get audio signal from specific apps on your
-device — e.g. YouTube / ReVanced Extended, CineHD — before investing in
-building the real music-filtering pipeline on top of it.
+Remove **music** (not speech) from the audio of videos while you watch, using an AI
+model (TIGER-DnR, trained to split film sound into dialogue / effects / music).
+Personal use, three ways to run it:
 
-**This app does not filter or separate anything yet.** It just captures
-whatever's currently playing on the device and shows a live dB level, so
-you can see per-app/per-content whether capture is blocked (DRM, or the
-app opted out) or working (you'll see the level move with the audio).
+| | What you do | Where the AI runs | Guide |
+|---|---|---|---|
+| **1. PC player** | click a browser button on YouTube / CineHD; the video opens in the mpv player with clean audio | this PC's graphics card | [pc/README.md](pc/README.md) |
+| **2. Tablet → PC over Wi-Fi** | patched YouTube / CineHD on the tablet send their audio to the PC and play back the cleaned audio | the PC's graphics card | [ANDROID.md](ANDROID.md) |
+| **3. On the device** | same patched apps + the "MuteHaram Engine" app | the tablet/phone's own GPU | [ANDROID.md](ANDROID.md) |
 
-## How it works
+**Start here: [MORNING.md](MORNING.md)** (what to test first, step by step).
+Project history, findings and design decisions: [HANDOFF.md](HANDOFF.md).
 
-- `MainActivity` requests `RECORD_AUDIO` permission, then launches the
-  system screen-capture consent dialog (`MediaProjectionManager`) — this
-  is required by Android for any audio playback capture, even though
-  we're not actually capturing video.
-- On consent, `AudioCaptureService` (a foreground service, required by
-  Android for `MediaProjection` use) builds an `AudioRecord` configured
-  with `AudioPlaybackCaptureConfiguration`, matching `USAGE_MEDIA`,
-  `USAGE_GAME`, and `USAGE_UNKNOWN` audio streams — i.e. "whatever's
-  playing on the device right now," not a specific app.
-- It computes a simple RMS/dB level from the captured PCM buffer and
-  reports it back to the UI live.
+## How it works (short)
 
-## How to test
+* **PC:** the AI runs ahead of playback (it is ~4x faster than real time on a GTX 1070), so
+  nothing needs delaying; mpv plays the original picture with the cleaned audio attached.
+* **Android:** apps can't be read ahead, so the hook delays the audio by a fixed ~2-4 s while the
+  AI works, and makes the player's audio clock run that far behind so the **picture is delayed by the
+  same amount** (verified on YouTube and CineHD). No root is needed: the hook is embedded into the
+  apps with LSPatch (see [NOROOT.md](NOROOT.md)).
 
-1. Open this project in Android Studio (`File > Open`, pick this folder).
-   Let it sync — it'll use Android Studio's bundled Gradle, no wrapper
-   jar needed.
-2. Build & run on your phone (USB debugging on, or build an APK and
-   sideload it).
-3. Tap **Start Capture**, grant the mic permission, then accept the
-   screen-capture consent dialog (Android requires this for playback
-   capture — you'll see a persistent notification while it's running).
-4. Switch to the app you want to test (YouTube/ReVanced, CineHD, etc.)
-   and start playing something.
-5. **If the app you're testing has no picture-in-picture mode** (CineHD,
-   for example), you won't be able to see MuteHaram's screen while it
-   plays — pull down the notification shade instead. The persistent
-   notification updates live with the current level and also tracks
-   whether it *ever* saw signal this session, so a quick swipe-down and
-   swipe-back-up is enough to check without interrupting playback:
-   - `Now: SIGNAL (-22 dB)` / `Now: silence`
-   - `Ever detected signal this session: yes, peak -18 dB` / `not yet`
-6. Reading it:
-   - **Any "SIGNAL" reading, or "yes" on the peak summary** → capture is
-     working for that content. You're clear to build the real pipeline
-     against it.
-   - **Stays on "silence" / "not yet" for the whole time audio is
-     clearly playing** → that stream is blocked, either DRM-protected
-     output (not overridable without root) or the app explicitly set
-     `allowAudioPlaybackCapture="false"`.
+## Repository map
 
-Test both apps separately — results can differ by app, and even within
-an app by content type (e.g. YouTube ad-supported video vs. a YouTube
-Movies/TV rental, which may be DRM-wrapped differently).
+```
+pc/            PC player, Wi-Fi server, browser extension, setup script (python setup_pc.py)
+hook/          Android hook module (embedded in YouTube/CineHD with LSPatch): AudioTrack (Java) + AAudio (C++) hooks
+engine/        "MuteHaram Engine" Android app: runs the model on the device GPU (LiteRT), serves the hook on localhost
+separation/    pure-Kotlin signal processing + real-time pipeline, unit-tested in CI (FFT, STFT, resampler, Wi-Fi client)
+bench/         speed-test app for the model on a device's GPU
+app/           early audio-capture test app (no longer used)
+hook/research/ experiments (model windows, ONNX, the .tflite re-timing tool)
+```
 
-## Known limitations of this harness
+Builds: every push to `main` builds all APKs (see [Releases](https://github.com/michaeldsepton-arch/MuteHaram/releases/latest))
+and runs the tests, including a Kotlin-vs-real-Python-server integration test.
 
-- Capture session requires that system consent dialog every time you
-  start it — this is enforced by Android (same mechanism as screen
-  recording), not something this app can bypass.
-- No filtering/separation yet — this only answers "can I get the bytes."
-- `minSdk` is 29 (Android 10) since `AudioPlaybackCapture` doesn't exist
-  below that.
+## Credits / licences
 
-## Next steps (once capture is confirmed working)
-
-If a target app passes this test, the next piece is swapping the RMS
-probe in `AudioCaptureService` for an actual source-separation model
-(e.g. a Demucs/BS-Roformer export run via ONNX Runtime for Android) fed
-by a few seconds of lookahead buffer, with the music stem dropped and
-the rest played back through the app's own `AudioTrack`.
+AI model: [TIGER](https://github.com/JusperLee/TIGER) (code MIT, weights Apache-2.0); GPU conversion
+by [litert-community](https://huggingface.co/litert-community/TIGER-DnR-LiteRT); ShadowHook (inline hooks),
+LSPatch/NPatch (rootless Xposed), mpv, ffmpeg, yt-dlp.
