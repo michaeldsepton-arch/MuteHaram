@@ -49,6 +49,9 @@ jobs:
           done
           ls -l bench/src/main/assets
 
+      - name: Unit-test the separation pipeline (pure Kotlin)
+        run: gradle :separation:test --no-daemon --stacktrace
+
       - name: Build debug APKs (all modules)
         run: gradle assembleDebug --no-daemon --stacktrace
 
