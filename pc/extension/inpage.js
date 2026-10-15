@@ -270,11 +270,40 @@
     node.connect(ctx.destination);
   }
 
+  // When the extension is present the connection goes through it (bridge.js + the background script):
+  // browsers stop web pages, especially players inside other sites' frames, from reaching this computer.
+  const b64 = (buf) => { const u = new Uint8Array(buf); let r = ""; for (let i = 0; i < u.length; i += 0x8000) r += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(r); };
+  const unb64 = (t) => { const r = atob(t), u = new Uint8Array(r.length); for (let i = 0; i < r.length; i++) u[i] = r.charCodeAt(i); return u.buffer; };
+  class BridgeSocket {
+    constructor(port) {
+      this.id = Math.random().toString(36).slice(2); this.readyState = 0; this.binaryType = "arraybuffer";
+      this.h = (e) => {
+        const d = e.data;
+        if (e.source !== window || !d || d.mhBridge !== "toPage" || d.id !== this.id) return;
+        if (d.t === "open") { this.readyState = 1; this.onopen && this.onopen(); }
+        else if (d.t === "text") this.onmessage && this.onmessage({ data: d.text });
+        else if (d.t === "bin") this.onmessage && this.onmessage({ data: unb64(d.b64) });
+        else if (d.t === "close") this._closed(d.code, d.reason);
+      };
+      window.addEventListener("message", this.h);
+      this._post({ t: "open", port });
+      this.watch = setTimeout(() => { if (this.readyState === 0) this._closed(4100, "the MuteHaram extension did not answer"); }, 8000);
+    }
+    _post(m) { window.postMessage(Object.assign({ mhBridge: "toExt", id: this.id }, m), "*"); }
+    send(d) { if (typeof d === "string") this._post({ t: "text", text: d }); else this._post({ t: "bin", b64: b64(d.buffer ? d.buffer.slice(d.byteOffset, d.byteOffset + d.byteLength) : d) }); }
+    close() { if (this.readyState === 3) return; this._post({ t: "close" }); this._closed(1000, ""); }
+    _closed(code, reason) {
+      if (this.readyState === 3) return;
+      this.readyState = 3; clearTimeout(this.watch); window.removeEventListener("message", this.h);
+      this.onclose && this.onclose({ code, reason });
+    }
+  }
+
   function connect() {
     if (closed) return;
     say("connecting ...", true);
     try {
-      ws = new WebSocket("ws://127.0.0.1:" + cfg.port);
+      ws = cfg.bridge ? new BridgeSocket(cfg.port) : new WebSocket("ws://127.0.0.1:" + cfg.port);
     } catch (e) {
       say("cannot open a connection from this page (blocked by the site?)", true);
       return;

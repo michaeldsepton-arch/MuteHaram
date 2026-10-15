@@ -182,6 +182,28 @@ try {
 
 chrome.action.onClicked.addListener((tab) => openInPlayer(tab, false));
 
+// Live mode connection owner: the page talks to us (through bridge.js), we talk to the live server.
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "mhlive") return;
+  let ws = null;
+  const b64 = (buf) => { const u = new Uint8Array(buf); let r = ""; for (let i = 0; i < u.length; i += 0x8000) r += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000)); return btoa(r); };
+  const unb64 = (t) => { const r = atob(t), u = new Uint8Array(r.length); for (let i = 0; i < r.length; i++) u[i] = r.charCodeAt(i); return u.buffer; };
+  port.onMessage.addListener((m) => {
+    try {
+      if (m.t === "open") {
+        ws = new WebSocket("ws://127.0.0.1:" + (m.port | 0));
+        ws.binaryType = "arraybuffer";
+        ws.onopen = () => port.postMessage({ t: "open" });
+        ws.onmessage = (e) => port.postMessage(typeof e.data === "string" ? { t: "text", text: e.data } : { t: "bin", b64: b64(e.data) });
+        ws.onclose = (e) => { try { port.postMessage({ t: "close", code: e.code, reason: e.reason }); } catch (x) {} };
+      } else if (ws && m.t === "text") ws.send(m.text);
+      else if (ws && m.t === "bin") ws.send(unb64(m.b64));
+      else if (ws && m.t === "close") ws.close();
+    } catch (e) { try { port.postMessage({ t: "close", code: 4102, reason: String(e) }); } catch (x) {} }
+  });
+  port.onDisconnect.addListener(() => { try { ws && ws.close(); } catch (e) {} });
+});
+
 // Live mode: the page's own sound is cleaned on this computer while it plays (see inpage.js).
 async function startLive(tab) {
   try {
@@ -190,8 +212,9 @@ async function startLive(tab) {
     if (!info.ok) throw new Error(info.error || "helper refused");
     await chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true }, world: "MAIN",
-      func: (c) => { window.__mhCfg = c; }, args: [{ port: info.port, token: info.token }],
+      func: (c) => { window.__mhCfg = c; }, args: [{ port: info.port, token: info.token, bridge: true }],
     });
+    await chrome.scripting.executeScript({ target: { tabId: tab.id, allFrames: true }, files: ["bridge.js"] });
     await chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true }, world: "MAIN", files: ["inpage.js"],
     });
