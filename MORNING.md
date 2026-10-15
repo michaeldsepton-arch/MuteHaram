@@ -13,6 +13,14 @@ installed or changed on your phone/tablets while you slept.
    built. **Not yet run on a device.** Only worth trying on the newer tablet.
 4. `pc\setup.bat` + `requirements.txt` set up any new computer (tested from an empty folder).
 
+## Listen first (no setup): what the Android pipeline sounds like
+
+`hookesearch\outndroid_demo\` has a 20 s movie clip run through the exact Android pipeline design
+(48 kHz stream → fixed delay → AI via the network protocol → subtract): `1_original_delayed.wav` vs
+`2_android_pipeline_cleaned.wav`. Measured: 17.5 dB closer to the best-case result than the untouched
+original (3.2 dB), 1.3 s delay, no late audio. (The same files are attached to every build on GitHub:
+Actions → latest run → "android-pipeline-demo-audio".)
+
 ## Test 1 — PC player (10 min, on this PC, nothing else needed)
 
 1. Double-click `pc\start_helper.bat` and leave it open.

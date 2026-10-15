@@ -257,6 +257,8 @@ Start with `MORNING.md` (test list) and `ANDROID.md` (modes). Architecture decis
 * Galaxy Tab S7 FE (SM-T736B, Adreno 619) measured 1.61 s compute per audio second on the 12 s model: cannot
   run it on-device; use Wi-Fi. Pixel 9 Pro: 0.38 (12 s chunk), expect ~0.75 for 2 s windows.
 
+**Measured offline (CI + real model):** the Android pipeline on a 20 s clip (48 kHz stereo stream, 1.5 s windows, 0.35 s margin, network round trip) is 17.5 dB closer to the best-case full-context result than the original is (3.2 dB), latency 1320 ms, 0 late frames. CI uploads the audio as artifact `android-pipeline-demo-audio`.
+
 **Unverified on hardware:** everything Android in modes remote/local; Chromium's reaction to a ~3 s clock
 shift; ExoPlayer's write-ahead eating the AI's time budget (raise `muteharam_budget_ms`); Engine app on a GPU.
 **Ideas not done:** Firefox extension; per-stream seek handling beyond flush/stop/release; int16 AAudio
