@@ -56,6 +56,8 @@ The extension now also catches streams fetched by the page's background workers 
 file names, and it tries the page address with yt-dlp as a last resort. When it still finds nothing it saves
 `pc\logs\extension-debug-<time>.txt`: the page address and what the page loaded. Open that file to see what
 the site does (it may contain addresses with login tokens; delete those parts before sharing it).
+The extension keeps the stream address in the browser's session storage, so it is still known when you click
+minutes after the video started (browsers stop and restart extension scripts, which used to make it forget).
 After updating, reload the extension on the browser's extensions page.
 
 **Settings (optional).** Copy `settings.example.json` to `settings.json` in the `pc` folder and edit it; every

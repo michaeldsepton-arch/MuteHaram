@@ -21,7 +21,30 @@ const subsFound = {}; // tabId -> [caption file urls]
 const recent = {};    // tabId -> last requests (for the "what did this page load" report)
 const reqHeaders = new Map(); // requestId -> kept headers (so the content-type check can reuse them)
 
+// A browser stops an extension's background script after ~30 s of quiet and restarts it on demand,
+// which wipes everything held in memory. The stream address is requested ONCE when the video starts, so
+// without this the extension has forgotten it by the time you click. Keep it in session storage.
+let saveTimer = null;
+function save() {
+  if (saveTimer) return;
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    try {
+      chrome.storage.session.set({ mh_found: found, mh_subs: subsFound, mh_orphans: orphans.slice(-40) });
+    } catch (e) { /* storage not available: keep working from memory */ }
+  }, 400);
+}
+const stateReady = (async () => {
+  try {
+    const d = await chrome.storage.session.get(["mh_found", "mh_subs", "mh_orphans"]);
+    for (const [k, v] of Object.entries(d.mh_found || {})) found[k] = [...v, ...(found[k] || [])];
+    for (const [k, v] of Object.entries(d.mh_subs || {})) subsFound[k] = [...v, ...(subsFound[k] || [])];
+    orphans.unshift(...(d.mh_orphans || []));
+  } catch (e) { /* no session storage */ }
+})();
+
 function add(list, c) {
+  save();
   if (!list.some((x) => x.url === c.url)) list.push(c);
   if (list.length > 40) list.shift();
 }
@@ -47,6 +70,7 @@ function onSendHeaders(d) {
       const l = (subsFound[d.tabId] ||= []);
       if (!l.includes(d.url)) l.push(d.url);
       if (l.length > 12) l.shift();
+      save();
     }
     return;
   }
@@ -77,9 +101,9 @@ function listen(event, fn, extra) {
 listen(chrome.webRequest.onSendHeaders, onSendHeaders, ["requestHeaders", "extraHeaders"]);
 listen(chrome.webRequest.onHeadersReceived, onHeadersReceived, ["responseHeaders", "extraHeaders"]);
 
-chrome.tabs.onRemoved.addListener((id) => { delete found[id]; delete subsFound[id]; delete recent[id]; });
+chrome.tabs.onRemoved.addListener((id) => { delete found[id]; delete subsFound[id]; delete recent[id]; save(); });
 chrome.tabs.onUpdated.addListener((id, info) => {
-  if (info.status === "loading" && info.url) { found[id] = []; subsFound[id] = []; recent[id] = []; } // new page
+  if (info.status === "loading" && info.url) { found[id] = []; subsFound[id] = []; recent[id] = []; save(); } // new page
 });
 
 function candidateList(tabId) {
@@ -155,6 +179,7 @@ try {
 chrome.action.onClicked.addListener((tab) => openInPlayer(tab, false));
 
 async function openInPlayer(tab, pip) {
+  await stateReady;
   const start = await pagePosition(tab.id);
   let payload;
   if (YT_RE.test(tab.url || "")) {
