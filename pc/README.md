@@ -51,6 +51,15 @@ Check what a computer is missing without installing: `python setup_pc.py --check
      address, so play the video for a few seconds first. The badge shows
      **OK** (opened), **?** (no stream seen yet) or **ERR** (helper not running).
 
+**Player controls.** The player uses the free *uosc* add-on (installed by `setup.bat`): move the mouse
+anywhere over the video and the controls appear (with a tooltip when you hover a button); click the
+picture to pause/resume; double-click for fullscreen; right-click for the menu (audio tracks, speed ...);
+mouse wheel for volume. If it says "uosc: MISSING" in `python setup_pc.py --check`, run `setup.bat` again.
+
+**If you hear music or nothing:** the player's audio track button switches between *our* cleaned track and the
+video's own sound. When MuteHaram cannot read a video's audio it now says why on screen and plays the original
+sound; the same reason is in the newest file in `pc\logs` (search for `PLAYING ORIGINAL AUDIO`).
+
 **Small corner window (picture-in-picture style):** right-click the MuteHaram toolbar icon and choose
 *Open in a small always-on-top window*, or press **P** in the player to toggle it at any time (small,
 no border, always on top, bottom-right). Drag the picture to move it; press **P** again for a normal,

@@ -178,6 +178,24 @@ def setup_tools():
         print("   mpv: found")
 
 
+def setup_uosc():
+    """uosc = the nicer on-screen controls for mpv (tooltips, shows on any mouse movement)."""
+    say("Player controls (uosc add-on for mpv)")
+    cfg_dir = os.path.join(HERE, "mpv_config")
+    main_lua = os.path.join(cfg_dir, "scripts", "uosc", "main.lua")
+    if os.path.exists(main_lua):
+        print("   uosc: present")
+        return
+    rel = gh_latest("tomasklaen/uosc")
+    asset = next(a for a in rel["assets"] if a["name"] == "uosc.zip")
+    z = os.path.join(TOOLS, "uosc.zip")
+    download(asset["browser_download_url"], z)
+    with zipfile.ZipFile(z) as zf:
+        zf.extractall(cfg_dir)       # scripts/uosc/... and fonts/...
+    os.remove(z)
+    print(f"   uosc {rel.get('tag_name', '')}: installed")
+
+
 # --------------------------------------------------------------------- finish
 def write_config(py):
     cfg = {
@@ -207,6 +225,8 @@ def report_missing():
         good = os.path.exists(p) and os.path.getsize(p) == size
         print(f"   {fn:18s} {'ok' if good else 'MISSING'}")
         ok &= good
+    uosc = os.path.exists(os.path.join(HERE, "mpv_config", "scripts", "uosc", "main.lua"))
+    print(f"   uosc     {'ok' if uosc else 'MISSING (player still works, with plain controls)'}")
     venv_py = os.path.join(VENV, "Scripts" if IS_WIN else "bin", "python" + EXE)
     print(f"   venv     {'ok' if os.path.exists(venv_py) else 'MISSING'}")
     return ok
@@ -228,6 +248,7 @@ def main():
         setup_weights()
     if not args.skip_tools:
         setup_tools()
+        setup_uosc()
     write_config(py)
     if not args.skip_python:
         say("Self-test")

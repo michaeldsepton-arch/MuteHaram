@@ -62,15 +62,35 @@ class MediaSource:
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *self._http_args(),
                "-ss", f"{max(0.0, start_seconds):.3f}", "-t", f"{seconds:.3f}", "-i", self.url, "-vn",
                "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "s16le", "pipe:1"]
-        out = subprocess.run(cmd, capture_output=True, timeout=120).stdout
+        res = subprocess.run(cmd, capture_output=True, timeout=120)
+        out = res.stdout
+        if not out:
+            why = res.stderr.decode("utf-8", "replace").strip().splitlines()
+            raise RuntimeError("ffmpeg returned no audio: " + (" | ".join(why[-3:]) or f"exit code {res.returncode}"))
         n = len(out) // (2 * CHANNELS) * 2 * CHANNELS
         return np.frombuffer(out[:n], dtype=np.int16).reshape(-1, CHANNELS)
+
+    def probe(self, start_seconds=0.0):
+        """Can we really decode audio from this source? -> (ok, reason)"""
+        try:
+            a = self.read_s16(start_seconds, 1.0)
+            return (len(a) > 1000, "" if len(a) > 1000 else "ffmpeg returned almost no audio")
+        except Exception as ex:
+            return False, str(ex)
 
     def decoder(self, start_seconds):
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *self._http_args(),
                "-ss", f"{max(0.0, start_seconds):.3f}", "-i", self.url, "-vn",
                "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "f32le", "pipe:1"]
-        return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
+        proc.err_tail = []
+
+        def drain():
+            for line in proc.stderr:
+                proc.err_tail = (proc.err_tail + [line.decode("utf-8", "replace").strip()])[-5:]
+
+        threading.Thread(target=drain, daemon=True).start()
+        return proc
 
 
 class Session:
@@ -232,6 +252,9 @@ class Session:
                     a = np.frombuffer(raw, dtype=np.float32).reshape(-1, CHANNELS)
                     buf = np.concatenate([buf, a])
                     dec_end += len(a)
+                if dec_end <= need_s and need_s < self.total_frames - SAMPLE_RATE:
+                    tail = " | ".join(getattr(dec, "err_tail", [])[-3:])
+                    raise RuntimeError("no audio could be decoded from the source" + (f": {tail}" if tail else ""))
                 # assemble the window [s, e), zero-padding outside the available audio
                 x = np.zeros((self.win, CHANNELS), np.float32)
                 lo = max(s, buf_start)

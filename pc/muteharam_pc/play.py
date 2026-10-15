@@ -127,6 +127,9 @@ def run(argv=None):
         session = Session(src, duration=r["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
                           device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
                           channels_mode=a.channels)
+        ok, why = src.probe(max(0.0, min(a.start, (r["duration"] or 1e9) - 3)))
+        if not ok:
+            raise RuntimeError(why)
         srv = make_server(session)
         audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"
         log("cleaned audio at", audio_url)
@@ -152,8 +155,10 @@ def run(argv=None):
         cmd += [f"--audio-file={audio_url}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}"]
     else:
         # The AI engine could not start (no GPU driver? model missing?): still play the video.
-        cmd += ["--osd-playing-msg=MuteHaram: the AI engine could not start, so you are hearing the ORIGINAL "
-                "audio (see the pc logs folder)", "--osd-duration=8000"]
+        why = " ".join(str(problem).split())[:160]
+        cmd += ["--osd-playing-msg=MuteHaram could not clean this video, so you hear the ORIGINAL audio. "
+                "Reason: " + why, "--osd-duration=12000"]
+        log("PLAYING ORIGINAL AUDIO because:", problem)
         if r["mpv_args"]:
             # a YouTube link was resolved as video-only for our audio track: ask for sound again
             r["mpv_args"] = [x for x in r["mpv_args"] if not x.startswith("--ytdl-format")]
@@ -162,6 +167,11 @@ def run(argv=None):
         # Opens small, frameless, always on top, bottom-right of the screen.
         cmd += ["--script-opts=muteharam-pip=yes", "--ontop", "--no-border", "--autofit=25%",
                 "--geometry=98%:94%", "--keep-open=no"]
+    cfg_dir = os.path.join(config.PC_DIR, "mpv_config")
+    if os.path.exists(os.path.join(cfg_dir, "scripts", "uosc", "main.lua")):
+        cmd += [f"--config-dir={cfg_dir}"]   # uosc controls, click-to-pause, our key bindings
+    else:
+        log("uosc is not installed (run setup_pc.py): using mpv's plain controls")
     cmd += ["--force-window=immediate", "--network-timeout=120", "--cache=yes",
             "--title=MuteHaram - ${media-title}", *r["mpv_args"], *a.mpv_arg]
     if a.start > 0:
