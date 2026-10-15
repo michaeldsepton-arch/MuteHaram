@@ -163,6 +163,24 @@ overlap-add in Kotlin/C++, (d) swap `DelayTestProcessor` for a real
 `StreamingAudioProcessor` whose `latencyMs` = real delay incl. inference.
 CineHD not tested yet (needs its package name and the same patch steps).
 
+### CineHD findings (2026-10-14, late)
+
+- Package: `com.cinehd` (the placeholder `com.cinehd.app` was wrong; moot now that the hook has no package filter). Patching with LSPatch works and the hook loads in it.
+- **Its audio is NOT `AudioTrack`.** `dumpsys audio` while playing shows
+  `type:AAudio`, stereo, 44100 Hz, in CineHD's own process (pid matches). None of
+  our hooks fire (no FIRST CALL).
+- APK is a **React Native** app (Hermes, reanimated, glide); it bundles NO media
+  player library (no libvlc/libmpv/ffmpeg/exoplayer natives). Best guess: video
+  plays in a WebView (Chromium), whose audio output is native AAudio.
+  Unconfirmed: check `/proc/<pid>/maps` for libwebviewchromium while playing.
+- **To support CineHD:** a native (C++/NDK) hook of AAudio: wrap the stream's data
+  callback (`AAudioStreamBuilder_setDataCallback`) to delay/process the buffer in
+  place, and shift `AAudioStream_getTimestamp`/frame counters for the clock
+  (Chromium derives its A/V delay from them). Needs inline hooking in libaaudio.so
+  (Dobby/ShadowHook-style) from the module's own native lib, extracted from the
+  embedded module APK. Estimated as a separate chunk of work; **parked until the
+  model works on YouTube.**
+
 ---
 
 ## The goal
