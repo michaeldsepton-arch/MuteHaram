@@ -138,12 +138,20 @@
   canvas.style.cssText = "position:fixed;pointer-events:none;background:#000";
   const g2d = canvas.getContext("2d");
   const queue = [];                 // {bm, due}
+  const pst = { captured: 0, drawn: 0, errors: 0, lastErr: "" };
   let origOpacity = video.style.opacity, lastDrawn = null, rafId = 0, rvfcOn = true;
 
   function layout() {
     const r = video.getBoundingClientRect();
     canvas.style.left = r.left + "px"; canvas.style.top = r.top + "px";
     canvas.style.width = r.width + "px"; canvas.style.height = r.height + "px";
+    // a transformed ancestor makes "fixed" mean "relative to that ancestor": measure and correct
+    const r2 = canvas.getBoundingClientRect();
+    if (Math.abs(r2.left - r.left) > 1 || Math.abs(r2.top - r.top) > 1) {
+      canvas.style.left = (r.left - (r2.left - r.left)) + "px"; canvas.style.top = (r.top - (r2.top - r.top)) + "px";
+    }
+    const z = getComputedStyle(video).zIndex;
+    canvas.style.zIndex = z === "auto" ? "" : z;
     const w = Math.max(2, Math.round(r.width * (window.devicePixelRatio || 1)));
     const h = Math.max(2, Math.round(r.height * (window.devicePixelRatio || 1)));
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; lastDrawn = null; }
@@ -172,7 +180,7 @@
     if (show) {
       if (lastDrawn) lastDrawn.close();
       lastDrawn = show.bm;
-      drawFrame(lastDrawn);
+      drawFrame(lastDrawn); pst.drawn++;
       if (cfg.debug) {            // sample the middle pixel: a white flash in the picture
         const px = g2d.getImageData(canvas.width >> 1, canvas.height >> 1, 1, 1).data;
         const bright = px[0] > 200 && px[1] > 200 && px[2] > 200;
@@ -193,8 +201,8 @@
       const sc = Math.min(1, cfg.maxWidth / vw);
       const due = performance.now() + delayMs + videoOffsetMs + outLatMs();
       createImageBitmap(video, { resizeWidth: Math.round(vw * sc), resizeHeight: Math.round(vh * sc), resizeQuality: "low" })
-        .then((bm) => { if (enabled) queue.push({ bm, due }); else bm.close(); })
-        .catch(() => {});
+        .then((bm) => { pst.captured++; if (enabled) queue.push({ bm, due }); else bm.close(); })
+        .catch((e) => { pst.errors++; pst.lastErr = String(e && e.message || e).slice(0, 80); });
     }
   }
   function onVideoFrame() {
@@ -364,7 +372,8 @@
     if (!e.altKey || (e.key !== "," && e.key !== ".")) return;
     videoOffsetMs += (e.key === "." ? 1 : -1) * (e.shiftKey ? 200 : 40);
     localStorage.setItem("mh_video_offset_ms", String(videoOffsetMs));
-    say("picture offset " + videoOffsetMs + " ms");
+    say("picture offset " + videoOffsetMs + " ms (frames taken " + pst.captured + ", shown " + pst.drawn + ", errors " + pst.errors +
+        (pst.lastErr ? ": " + pst.lastErr : "") + ", canvas " + canvas.width + "x" + canvas.height + (canvas.isConnected ? "" : " NOT ATTACHED") + ")");
   }, true);
 
   function toggle() {
