@@ -19,3 +19,4 @@ dependencyResolutionManagement {
 rootProject.name = "MuteHaram"
 include(":app")
 include(":hook")
+include(":bench")

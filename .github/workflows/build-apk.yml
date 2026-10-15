@@ -34,7 +34,13 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Build debug APKs (both modules)
+      - name: Download the ready-made TIGER model for the benchmark app
+        run: |
+          mkdir -p bench/src/main/assets
+          curl -L --fail -o bench/src/main/assets/tiger_music_fp16.tflite             https://huggingface.co/litert-community/TIGER-DnR-LiteRT/resolve/main/tiger_music_fp16.tflite
+          ls -l bench/src/main/assets
+
+      - name: Build debug APKs (all modules)
         run: gradle assembleDebug --no-daemon --stacktrace
 
       - name: Upload capture-test APK
@@ -49,7 +55,13 @@ jobs:
           name: muteharam-hook-debug-apk
           path: hook/build/outputs/apk/debug/hook-debug.apk
 
-      - name: Publish both APKs as a GitHub Release
+      - name: Upload benchmark APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: muteharam-bench-debug-apk
+          path: bench/build/outputs/apk/debug/bench-debug.apk
+
+      - name: Publish all APKs as a GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
@@ -57,6 +69,7 @@ jobs:
           files: |
             app/build/outputs/apk/debug/app-debug.apk
             hook/build/outputs/apk/debug/hook-debug.apk
+            bench/build/outputs/apk/debug/bench-debug.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
