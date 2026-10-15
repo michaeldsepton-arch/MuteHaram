@@ -5,7 +5,7 @@ so work can resume cleanly from a different session/tool (e.g. picking
 this up in Claude Code on your own machine, with full internet access
 this sandbox doesn't have).
 
-**Last updated:** 2026-10-14, build-6 + model research (see "Model research" section)
+**Last updated:** 2026-10-14 evening: NO ROOT NEEDED, video re-sync verified (see "ROOT NOT NEEDED" section)
 
 ## Sequencing decision: validate cheap before building expensive (important, read this first)
 
@@ -121,6 +121,47 @@ on push; behaviour needs a rooted device). Fallback: hook
 clock-shift with a fake-delay processor; (3) re-export TIGER-music to LiteRT
 at 1-2 s fixed windows with in-graph STFT and time it on the Pixel GPU;
 (4) integrate (STFT/iSTFT in Kotlin, LiteRT GPU) and listen to quality.
+
+### ROOT NOT NEEDED + video re-sync VERIFIED (2026-10-14, evening)
+
+**Big change: no root required.** The hook runs inside ReVanced YouTube
+(`anddea.youtube`, ReVanced Extended) on the stock Pixel 9 Pro, patched with
+**LSPatch** (JingMatrix fork v1.2, Integrated mode, hook embedded). Guides:
+`NOROOT.md` (use this) and `ROOTING.md` (fallback only; never needed).
+The hook no longer filters by package name (LSPatch scoping does that).
+
+**Video re-sync works** (user-verified by eye on a talking-head video): delaying
+the audio by D and shifting the reported `AudioTrack` clock back by D
+(`getPlaybackHeadPosition` / `getTimestamp`) keeps lips and voice in sync;
+with the shift disabled the voice is D late. YouTube's player reads
+`getPlaybackHeadPosition` (~300 calls/s). Side effect: picture freezes for D
+at video start/seek.
+
+**Bugs found along the way (all fixed):**
+1. Hooks were installed once per *package* loaded into the process (app +
+   WebView + microG), stacking 3x: audio processed 3x (garbled "many voices"),
+   clock shifted 3x (so a 500 ms shift "matched" a 1500 ms delay). Fixed with a
+   once-per-process guard. LESSON: when a result looks like a weird constant
+   ratio, check for duplicated hooks first.
+2. Non-blocking `write(ByteBuffer)` re-presents the unaccepted tail; in-place
+   processing must skip it (`RetryGuard`).
+3. Delay lines are per-stream (`streamId`) and cleared on flush/stop/release.
+4. Beep-and-flash sync tests with a 1 s period hide a 1 s delay. Use speech.
+
+**YouTube's audio path:** `AudioTrack.write(ByteBuffer, int, int)`, 48 kHz,
+stereo, PCM16.
+
+**Test harness** (live, no re-patching): `DelayTestProcessor` reads
+`adb shell settings put global muteharam_delay_ms|muteharam_noclock|muteharam_shift_ms`.
+Logs: `adb logcat -d -s MuteHaramHook` (in/out loudness every ~250 ms, clock
+calls, stream resets).
+
+**Still open (the actual project):** the separation model. Needs (a)
+re-export of TIGER-music for fixed 1-2 s windows with GPU-friendly ops,
+(b) on-device speed measurement on the Pixel (LiteRT GPU), (c) STFT/iSTFT +
+overlap-add in Kotlin/C++, (d) swap `DelayTestProcessor` for a real
+`StreamingAudioProcessor` whose `latencyMs` = real delay incl. inference.
+CineHD not tested yet (needs its package name and the same patch steps).
 
 ---
 
