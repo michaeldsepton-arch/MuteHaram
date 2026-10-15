@@ -23,6 +23,18 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DIRECT = re.compile(r"\.(m3u8|mpd|mp4|m4v|webm|mkv|mov|ts|mp3|m4a|flac|ogg|opus)(\?|#|$)", re.I)
 
 
+def ui_error(message):
+    """Tell the user about a problem even when we were started without a console
+    (by the browser extension's helper): a message box on Windows."""
+    print("ERROR:", message, flush=True)
+    if os.name == "nt" and not (sys.stdout and sys.stdout.isatty()):
+        try:
+            import ctypes
+            ctypes.windll.user32.MessageBoxW(0, message, "MuteHaram", 0x10)
+        except Exception:
+            pass
+
+
 def is_direct(url):
     return os.path.exists(url) or bool(DIRECT.search(url))
 
@@ -59,6 +71,25 @@ def resolve(url, headers, cfg, log):
 
 
 def main(argv=None):
+    try:
+        run(argv)
+    except SystemExit as e:
+        if isinstance(e.code, str):
+            ui_error(e.code)
+            sys.exit(1)
+        raise
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:  # anything unexpected: say so instead of dying silently
+        import traceback
+        traceback.print_exc()
+        nl = chr(10)
+        ui_error("MuteHaram hit an unexpected problem:" + nl + nl + repr(e) + nl + nl +
+                 "Details are in the pc/logs folder.")
+        sys.exit(1)
+
+
+def run(argv=None):
     ap = argparse.ArgumentParser(prog="muteharam_pc.play")
     ap.add_argument("url")
     ap.add_argument("--start", type=float, default=0.0, help="start position in seconds")
@@ -88,23 +119,44 @@ def main(argv=None):
 
     r = resolve(a.url, headers, cfg, log)
     src = MediaSource(r["media_url"], r["headers"], cfg["ffmpeg"], cfg["ffprobe"])
-    session = Session(src, duration=r["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
-                      device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
-                      channels_mode=a.channels)
-    srv = make_server(session)
-    audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"
-    log("cleaned audio at", audio_url)
+    session = srv = None
+    problem = None
+    try:
+        session = Session(src, duration=r["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
+                          device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
+                          channels_mode=a.channels)
+        srv = make_server(session)
+        audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"
+        log("cleaned audio at", audio_url)
+    except Exception as ex:
+        import traceback
+        traceback.print_exc()
+        problem = ex
+        if "ffprobe" in repr(ex).lower() or isinstance(ex, (ValueError, subprocess.TimeoutExpired)):
+            nl = chr(10)
+            raise SystemExit("MuteHaram could not read this video's audio. The link may have expired, "
+                             "need a login, or be copy-protected." + nl + nl + "Technical detail: " + repr(ex))
     if a.no_player:
+        if problem:
+            raise SystemExit(f"engine failed: {problem!r}")
         try:
             while True:
                 time.sleep(3600)
         except KeyboardInterrupt:
             return
 
-    cmd = [cfg["mpv"], r["mpv_url"], f"--audio-file={audio_url}",
-           f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}",
-           "--force-window=immediate", "--network-timeout=120", "--cache=yes",
-           "--title=MuteHaram - ${media-title}", *r["mpv_args"], *a.mpv_arg]
+    cmd = [cfg["mpv"], r["mpv_url"]]
+    if problem is None:
+        cmd += [f"--audio-file={audio_url}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}"]
+    else:
+        # The AI engine could not start (no GPU driver? model missing?): still play the video.
+        cmd += ["--osd-playing-msg=MuteHaram: the AI engine could not start, so you are hearing the ORIGINAL "
+                "audio (see the pc logs folder)", "--osd-duration=8000"]
+        if r["mpv_args"]:
+            # a YouTube link was resolved as video-only for our audio track: ask for sound again
+            r["mpv_args"] = [x for x in r["mpv_args"] if not x.startswith("--ytdl-format")]
+    cmd += ["--force-window=immediate", "--network-timeout=120", "--cache=yes",
+            "--title=MuteHaram - ${media-title}", *r["mpv_args"], *a.mpv_arg]
     if a.start > 0:
         cmd.append(f"--start={a.start}")
     env = dict(os.environ)
@@ -113,8 +165,10 @@ def main(argv=None):
     try:
         subprocess.run(cmd, env=env)
     finally:
-        session.close()
-        srv.shutdown()
+        if session:
+            session.close()
+        if srv:
+            srv.shutdown()
 
 
 if __name__ == "__main__":

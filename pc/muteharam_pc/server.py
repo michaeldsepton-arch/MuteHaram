@@ -5,6 +5,7 @@ WAV: bytes are produced on demand from the engine's blocks.
 """
 import re
 import struct
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -90,6 +91,13 @@ def make_server(session, host="127.0.0.1", port=0):
 
     class Server(ThreadingHTTPServer):
         daemon_threads = True
+
+        def handle_error(self, request, client_address):
+            # the player closing its connection (seek, exit) is normal, not an error worth a traceback
+            et = sys.exc_info()[0]
+            if et is not None and issubclass(et, OSError):
+                return
+            super().handle_error(request, client_address)
 
     srv = Server((host, port), Handler)
     threading.Thread(target=srv.serve_forever, name="audio-http", daemon=True).start()
