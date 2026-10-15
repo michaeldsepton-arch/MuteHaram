@@ -25,6 +25,33 @@ class AudioTrackHook : IXposedHookLoadPackage {
 
     private val seen = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
+    /**
+     * Players (ExoPlayer) call write(ByteBuffer, ...) in NON-BLOCKING mode:
+     * Android may accept only part of the chunk, and the player then offers
+     * the unaccepted tail again on the next call. We process in place, so
+     * without this guard that tail would be processed twice (audibly: smeared
+     * overlapping copies of the speech). We remember the unaccepted range
+     * and skip processing when exactly that range comes back.
+     */
+    private object RetryGuard {
+        private var buf: ByteBuffer? = null
+        private var start = 0
+        private var end = 0
+
+        @Synchronized
+        fun isRetry(b: ByteBuffer, s: Int, e: Int): Boolean =
+            buf === b && start == s && end == e
+
+        @Synchronized
+        fun record(b: ByteBuffer, s: Int, size: Int, written: Int) {
+            if (written in 0 until size) {
+                buf = b; start = s + written; end = s + size
+            } else {
+                buf = null
+            }
+        }
+    }
+
     /** Log once per overload so logcat tells us which write() the app uses and in what format. */
     private fun logFirst(kind: String, track: AudioTrack) {
         if (seen.putIfAbsent(kind, true) == null) {
@@ -202,6 +229,8 @@ class AudioTrackHook : IXposedHookLoadPackage {
                         // uses in its default buffering mode, so this
                         // is the one most likely to actually fire.
                         val startPos = buf.position()
+                        param.setObjectExtra("start", startPos)
+                        if (RetryGuard.isRetry(buf, startPos, startPos + sizeInBytes)) return
                         val order = buf.order()
                         buf.order(ByteOrder.LITTLE_ENDIAN)
 
@@ -221,6 +250,13 @@ class AudioTrackHook : IXposedHookLoadPackage {
                         }
                         buf.order(order)
                         buf.position(startPos) // restore so write() still reads from the right place
+                    }
+
+                    override fun afterHookedMethod(param: MethodHookParam) {
+                        val buf = param.args[0] as? ByteBuffer ?: return
+                        val start = param.getObjectExtra("start") as? Int ?: return
+                        val written = param.result as? Int ?: return
+                        RetryGuard.record(buf, start, param.args[1] as Int, written)
                     }
                 }
             )
