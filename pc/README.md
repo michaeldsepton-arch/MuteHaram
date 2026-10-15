@@ -51,6 +51,12 @@ Check what a computer is missing without installing: `python setup_pc.py --check
      address, so play the video for a few seconds first. The badge shows
      **OK** (opened), **?** (no stream seen yet) or **ERR** (helper not running).
 
+**Small corner window (picture-in-picture style):** right-click the MuteHaram toolbar icon and choose
+*Open in a small always-on-top window*, or press **P** in the player to toggle it at any time (small,
+no border, always on top, bottom-right). Drag the picture to move it; press **P** again for a normal,
+resizable window. (`T` toggles always-on-top by itself.) Command line: add `--pip`. New in this version
+and not yet checked on a screen: tell me if the position or size looks wrong.
+
 Without the browser you can also run it directly:
 
 ```

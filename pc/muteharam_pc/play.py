@@ -99,6 +99,8 @@ def run(argv=None):
     ap.add_argument("--window", type=float, default=10.0, help="AI window, seconds (more = better, slower)")
     ap.add_argument("--hop", type=float, default=6.0, help="seconds produced per window")
     ap.add_argument("--gain", type=float, default=1.0, help="1.0 = remove all music, 0.5 = halve it")
+    ap.add_argument("--pip", action="store_true",
+                    help="start in a small always-on-top corner window (press P in the player to toggle)")
     ap.add_argument("--cpu", action="store_true", help="do not use the GPU")
     ap.add_argument("--channels", choices=["auto", "mono", "stereo"], default="auto",
                     help="stereo = clean left and right separately (needs a GPU); mono = clean the mix once")
@@ -155,6 +157,11 @@ def run(argv=None):
         if r["mpv_args"]:
             # a YouTube link was resolved as video-only for our audio track: ask for sound again
             r["mpv_args"] = [x for x in r["mpv_args"] if not x.startswith("--ytdl-format")]
+    cmd += [f"--script={os.path.join(HERE, 'mpv_pip.lua')}"]
+    if a.pip:
+        # Opens small, frameless, always on top, bottom-right of the screen.
+        cmd += ["--script-opts=muteharam-pip=yes", "--ontop", "--no-border", "--autofit=25%",
+                "--geometry=98%:94%", "--keep-open=no"]
     cmd += ["--force-window=immediate", "--network-timeout=120", "--cache=yes",
             "--title=MuteHaram - ${media-title}", *r["mpv_args"], *a.mpv_arg]
     if a.start > 0:

@@ -78,6 +78,8 @@ class Handler(BaseHTTPRequestHandler):
             start = float(req.get("start") or 0)
             if start > 1:
                 cmd += ["--start", str(start)]
+            if req.get("pip"):
+                cmd += ["--pip"]
             if req.get("referer"):
                 cmd += ["--referer", str(req["referer"])]
             for k, v in (req.get("headers") or {}).items():

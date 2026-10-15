@@ -76,18 +76,32 @@ function badge(tabId, text, color, title) {
   setTimeout(() => chrome.action.setBadgeText({ tabId, text: "" }), 6000);
 }
 
-chrome.action.onClicked.addListener(async (tab) => {
+// Right-click the toolbar icon -> "small window" opens the player as a corner picture-in-picture.
+try {
+  chrome.runtime.onInstalled.addListener(() => {
+    chrome.contextMenus.create({
+      id: "muteharam-pip", title: "Open in a small always-on-top window", contexts: ["action"],
+    });
+  });
+  chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId === "muteharam-pip" && tab) openInPlayer(tab, true);
+  });
+} catch (e) { /* contextMenus not available: normal click still works */ }
+
+chrome.action.onClicked.addListener((tab) => openInPlayer(tab, false));
+
+async function openInPlayer(tab, pip) {
   const start = await pagePosition(tab.id);
   let payload;
   if (YT_RE.test(tab.url || "")) {
-    payload = { url: tab.url, start };
+    payload = { url: tab.url, start, pip };
   } else {
     const c = pickCandidate(found[tab.id]);
     if (!c) {
       return badge(tab.id, "?", "#b26a00",
         "No video stream seen on this page yet. Press play on the video, wait a few seconds, then click again.");
     }
-    payload = { url: c.url, headers: c.headers, referer: c.headers.Referer || tab.url, start, page: tab.url, title: tab.title };
+    payload = { url: c.url, headers: c.headers, referer: c.headers.Referer || tab.url, start, page: tab.url, title: tab.title, pip };
   }
   try {
     const r = await fetch(HELPER + "/play", {
@@ -102,4 +116,4 @@ chrome.action.onClicked.addListener(async (tab) => {
     badge(tab.id, "ERR", "#c62828",
       "Can't reach the MuteHaram helper. Start it with start_helper.bat. (" + e.message + ")");
   }
-});
+}
