@@ -131,10 +131,24 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Kotlin pipeline vs the real server
+      - name: Get a real movie clip (TIGER's own test file)
+        run: curl -L --fail -o clip.wav https://raw.githubusercontent.com/JusperLee/TIGER/main/test/test_mixture_466.wav
+
+      - name: Kotlin pipeline vs the real server (+ render the clip through it)
         env:
           MUTEHARAM_SERVER: "127.0.0.1:47801"
-        run: gradle :separation:test --tests '*LiveServerTest*' --no-daemon --stacktrace
+          MUTEHARAM_CLIP: ${{ github.workspace }}/clip.wav
+          MUTEHARAM_OUT: ${{ github.workspace }}/android_pipeline_demo
+          MUTEHARAM_SECONDS: "20"
+        run: gradle :separation:test --tests '*LiveServerTest*' --tests '*RenderDemoTest*' --no-daemon --stacktrace
+
+      - name: Upload what the Android pipeline sounds like
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-pipeline-demo-audio
+          path: android_pipeline_demo/
+          if-no-files-found: ignore
 
       - name: Server log
         if: always()
