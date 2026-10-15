@@ -22,7 +22,17 @@ object NativeBridge {
     private var started = false
 
     @JvmStatic external fun nativeInit(): Int
-    @JvmStatic external fun nativeSetConfig(delayMs: Int, shiftMs: Int, noClock: Int)
+    @JvmStatic external fun nativeSetConfig(delayMs: Int, shiftMs: Int, noClock: Int, mode: Int)
+
+    /** Called from the native AAudio callback (audio thread) when music removal is on. */
+    @JvmStatic
+    fun onAudioFloat(streamKey: Int, buf: java.nio.ByteBuffer, frames: Int, channels: Int, rate: Int) {
+        try {
+            SeparationHost.processFloat(streamKey, buf, frames, channels, rate)
+        } catch (t: Throwable) {
+            // never let an exception reach the audio callback
+        }
+    }
 
     fun start() {
         if (started) return
@@ -34,10 +44,13 @@ object NativeBridge {
             thread(name = "MuteHaramConfig", isDaemon = true) {
                 while (true) {
                     try {
+                        val separating = HookSettings.separating
+                        val noClock = DebugProps.getInt("noclock", 0)
                         nativeSetConfig(
-                            DebugProps.getInt("delay_ms", 0).coerceIn(0, 5000),
-                            DebugProps.getInt("shift_ms", -1),
-                            DebugProps.getInt("noclock", 0)
+                            if (separating) 0 else DebugProps.getInt("delay_ms", 0).coerceIn(0, 5000),
+                            if (separating) SeparationHost.latencyMs() else DebugProps.getInt("shift_ms", -1),
+                            noClock,
+                            if (separating) 1 else 0
                         )
                         Thread.sleep(500)
                     } catch (t: Throwable) {

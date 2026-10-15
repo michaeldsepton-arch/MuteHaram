@@ -55,4 +55,7 @@ dependencies {
 
     // Inline-hooking library for the native AAudio hook (bundled in the APK).
     implementation("com.bytedance.android:shadowhook:2.0.0")
+
+    // Pure-Kotlin signal processing + real-time pipeline (unit-tested in CI).
+    implementation(project(":separation"))
 }

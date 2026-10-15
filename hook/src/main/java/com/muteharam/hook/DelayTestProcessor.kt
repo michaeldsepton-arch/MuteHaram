@@ -13,14 +13,16 @@ internal object DebugProps {
     private var warnedProp = false
 
     fun getInt(name: String, default: Int): Int =
+        fromSettings(name)?.toIntOrNull() ?: fromProp(name)?.toIntOrNull() ?: default
+
+    fun getString(name: String, default: String): String =
         fromSettings(name) ?: fromProp(name) ?: default
 
-    private fun fromSettings(name: String): Int? = try {
+    private fun fromSettings(name: String): String? = try {
         val app = Class.forName("android.app.ActivityThread")
             .getMethod("currentApplication").invoke(null) as? android.app.Application
         app?.let {
-            android.provider.Settings.Global
-                .getString(it.contentResolver, "muteharam_$name")?.toIntOrNull()
+            android.provider.Settings.Global.getString(it.contentResolver, "muteharam_$name")
         }
     } catch (t: Throwable) {
         if (!warnedSettings) {
@@ -30,10 +32,10 @@ internal object DebugProps {
         null
     }
 
-    private fun fromProp(name: String): Int? = try {
+    private fun fromProp(name: String): String? = try {
         val c = Class.forName("android.os.SystemProperties")
         val m = c.getMethod("get", String::class.java, String::class.java)
-        (m.invoke(null, "debug.muteharam.$name", "") as String).toIntOrNull()
+        (m.invoke(null, "debug.muteharam.$name", "") as String).ifEmpty { null }
     } catch (t: Throwable) {
         if (!warnedProp) {
             warnedProp = true

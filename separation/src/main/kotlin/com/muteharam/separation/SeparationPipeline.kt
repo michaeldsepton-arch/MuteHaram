@@ -46,11 +46,11 @@ class SeparationPipeline(
     private val chunk = estimator.chunkSamples                 // model domain samples
 
     // ---- block geometry in the STREAM domain
-    private val windowFrames = (chunk.toLong() * sampleRate / modelRate).toInt()      // Ws
-    private val marginFrames = ceil(marginSeconds * sampleRate).toInt()                // Ms
-    private val hopFrames = windowFrames - 2 * marginFrames                            // Hs
-    val latencyFrames: Int = hopFrames + marginFrames +
-        ((inferenceBudgetMs + slackMs) / 1000.0 * sampleRate).roundToInt()
+    private val plan = plan(sampleRate, chunk, marginSeconds, inferenceBudgetMs, slackMs)
+    private val windowFrames = plan.windowFrames               // Ws
+    private val marginFrames = plan.marginFrames               // Ms
+    private val hopFrames = plan.hopFrames                     // Hs
+    val latencyFrames: Int = plan.latencyFrames
     val latencyMs: Int get() = (latencyFrames * 1000L / sampleRate).toInt()
 
     // ---- rings (indices are absolute stream frame numbers, stored modulo cap)
@@ -217,5 +217,20 @@ class SeparationPipeline(
         if (generation != gen) return
         blockOk[(k % blockOk.size).toInt()] = ok
         blocksDone = k + 1
+    }
+
+    /** Block geometry and the fixed output delay, without creating a pipeline. */
+    data class Plan(val windowFrames: Int, val marginFrames: Int, val hopFrames: Int, val latencyFrames: Int) {
+        fun latencyMs(sampleRate: Int): Int = (latencyFrames * 1000L / sampleRate).toInt()
+    }
+
+    companion object {
+        fun plan(sampleRate: Int, chunkSamples: Int, marginSeconds: Double, inferenceBudgetMs: Int, slackMs: Int): Plan {
+            val ws = (chunkSamples.toLong() * sampleRate / ChunkModel.SAMPLE_RATE).toInt()
+            val ms = ceil(marginSeconds * sampleRate).toInt()
+            val hs = ws - 2 * ms
+            val lat = hs + ms + ((inferenceBudgetMs + slackMs) / 1000.0 * sampleRate).roundToInt()
+            return Plan(ws, ms, hs, lat)
+        }
     }
 }

@@ -29,6 +29,11 @@ namespace {
 std::atomic<int> g_delayMs{0};
 std::atomic<int> g_shiftMs{-1};  // -1 = same as delay
 std::atomic<int> g_noClock{0};
+std::atomic<int> g_mode{0};      // 0 = built-in test delay, 1 = hand audio to the Kotlin pipeline
+
+JavaVM* g_vm = nullptr;
+jclass g_bridgeCls = nullptr;
+jmethodID g_onAudio = nullptr;
 
 struct CbCtx {
     AAudioStream_dataCallback cb;
@@ -128,11 +133,35 @@ void processStream(AAudioStream* stream, void* data, int32_t frames) {
     }
 }
 
+// Real music removal: pass the (float) buffer to NativeBridge.onAudioFloat, which
+// modifies it in place. The buffer is native memory, wrapped without copying.
+void callKotlin(AAudioStream* stream, void* data, int32_t frames) {
+    if (g_vm == nullptr || g_onAudio == nullptr) return;
+    if (AAudioStream_getDirection(stream) != AAUDIO_DIRECTION_OUTPUT) return;
+    if (AAudioStream_getFormat(stream) != AAUDIO_FORMAT_PCM_FLOAT) return;
+    JNIEnv* env = nullptr;
+    if (g_vm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK) return;
+    }
+    const int ch = AAudioStream_getChannelCount(stream);
+    const int rate = AAudioStream_getSampleRate(stream);
+    jobject bb = env->NewDirectByteBuffer(data, (jlong)frames * ch * 4);
+    if (bb == nullptr) return;
+    env->CallStaticVoidMethod(g_bridgeCls, g_onAudio, (jint)(uintptr_t)stream, bb, (jint)frames,
+                              (jint)ch, (jint)rate);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(bb);
+}
+
 aaudio_data_callback_result_t wrappedCallback(AAudioStream* stream, void* user, void* data,
                                               int32_t frames) {
     CbCtx* c = (CbCtx*)user;
     aaudio_data_callback_result_t res = c->cb(stream, c->user, data, frames);
-    processStream(stream, data, frames);
+    if (g_mode.load() == 1) {
+        callKotlin(stream, data, frames);
+    } else {
+        processStream(stream, data, frames);
+    }
     return res;
 }
 
@@ -169,8 +198,19 @@ aaudio_result_t proxy_close(AAudioStream* s) {
 
 }  // namespace
 
+extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
+    g_vm = vm;
+    return JNI_VERSION_1_6;
+}
+
 extern "C" JNIEXPORT jint JNICALL
-Java_com_muteharam_hook_NativeBridge_nativeInit(JNIEnv*, jclass) {
+Java_com_muteharam_hook_NativeBridge_nativeInit(JNIEnv* env, jclass cls) {
+    g_bridgeCls = (jclass)env->NewGlobalRef(cls);
+    g_onAudio = env->GetStaticMethodID(cls, "onAudioFloat", "(ILjava/nio/ByteBuffer;III)V");
+    if (g_onAudio == nullptr) {
+        env->ExceptionClear();
+        LOGI("NativeBridge.onAudioFloat not found: separation mode unavailable for AAudio apps");
+    }
     int rc = shadowhook_init(SHADOWHOOK_MODE_UNIQUE, false);
     if (rc != 0) {
         LOGI("shadowhook_init failed rc=%d", rc);
@@ -196,11 +236,13 @@ Java_com_muteharam_hook_NativeBridge_nativeInit(JNIEnv*, jclass) {
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_muteharam_hook_NativeBridge_nativeSetConfig(JNIEnv*, jclass, jint delayMs, jint shiftMs,
-                                                     jint noClock) {
-    if (g_delayMs.load() != delayMs || g_shiftMs.load() != shiftMs || g_noClock.load() != noClock) {
-        LOGI("native settings: delay_ms=%d shift_ms=%d noclock=%d", delayMs, shiftMs, noClock);
+                                                     jint noClock, jint mode) {
+    if (g_delayMs.load() != delayMs || g_shiftMs.load() != shiftMs || g_noClock.load() != noClock ||
+        g_mode.load() != mode) {
+        LOGI("native settings: delay_ms=%d shift_ms=%d noclock=%d mode=%d", delayMs, shiftMs, noClock, mode);
     }
     g_delayMs = delayMs;
     g_shiftMs = shiftMs;
     g_noClock = noClock;
+    g_mode = mode;
 }

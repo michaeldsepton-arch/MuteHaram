@@ -35,5 +35,5 @@ object HookConfig {
      * See StreamingAudioProcessor's doc comment for the latency
      * budget that window size needs to respect.
      */
-    val processor: AudioProcessor = DelayTestProcessor() // passthrough unless debug.muteharam.delay_ms is set
+    val processor: AudioProcessor = ModeProcessor() // sync experiment by default; real music removal via muteharam_mode
 }
