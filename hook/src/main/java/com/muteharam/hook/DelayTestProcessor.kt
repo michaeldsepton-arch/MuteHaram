@@ -67,10 +67,25 @@ class DelayTestProcessor : AudioProcessor {
     @Volatile private var shiftMs = -1
     @Volatile private var lastPollNs = 0L
 
-    private var ring = ShortArray(0)
-    private var pos = 0
-    private var ringRate = 0
-    private var ringCh = 0
+    /** One delay line per AudioTrack, so concurrent streams never mix. */
+    private class Stream {
+        var ring = ShortArray(0)
+        var pos = 0
+        var rate = 0
+        var ch = 0
+    }
+
+    private val streams = java.util.concurrent.ConcurrentHashMap<Int, Stream>()
+
+    override fun reset(streamId: Int) {
+        streams[streamId]?.let {
+            synchronized(it) {
+                java.util.Arrays.fill(it.ring, 0.toShort())
+                it.pos = 0
+            }
+        }
+        android.util.Log.i("MuteHaramHook", "stream $streamId reset (flush/stop/release)")
+    }
 
     private fun poll() {
         val now = System.nanoTime()
@@ -113,34 +128,44 @@ class DelayTestProcessor : AudioProcessor {
         offset: Int,
         length: Int,
         sampleRateHz: Int,
-        channelCount: Int
+        channelCount: Int,
+        streamId: Int
     ) {
         poll()
         val d = delayMs
         measureIn(pcm16, offset, length)
-        if (d <= 0) {
-            if (ring.isNotEmpty()) ring = ShortArray(0)
-            measureOut(pcm16, offset, length, sampleRateHz, channelCount, d)
-            return
+        val st = streams.getOrPut(streamId) {
+            android.util.Log.i(
+                "MuteHaramHook",
+                "new stream $streamId rate=$sampleRateHz ch=$channelCount (streams open: ${streams.size + 1})"
+            )
+            Stream()
         }
-        val needed = (sampleRateHz.toLong() * d / 1000).toInt() * channelCount
-        if (needed <= 0) return
-        if (ring.size != needed || ringRate != sampleRateHz || ringCh != channelCount) {
-            ring = ShortArray(needed)
-            pos = 0
-            ringRate = sampleRateHz
-            ringCh = channelCount
+        synchronized(st) {
+            if (d <= 0) {
+                if (st.ring.isNotEmpty()) st.ring = ShortArray(0)
+            } else {
+                val needed = (sampleRateHz.toLong() * d / 1000).toInt() * channelCount
+                if (needed > 0) {
+                    if (st.ring.size != needed || st.rate != sampleRateHz || st.ch != channelCount) {
+                        st.ring = ShortArray(needed)
+                        st.pos = 0
+                        st.rate = sampleRateHz
+                        st.ch = channelCount
+                    }
+                    val r = st.ring
+                    var p = if (st.pos < r.size) st.pos else 0
+                    for (i in offset until offset + length) {
+                        val old = r[p]
+                        r[p] = pcm16[i]
+                        pcm16[i] = old
+                        p++
+                        if (p == r.size) p = 0
+                    }
+                    st.pos = p
+                }
+            }
         }
-        val r = ring
-        var p = if (pos < r.size) pos else 0
-        for (i in offset until offset + length) {
-            val old = r[p]
-            r[p] = pcm16[i]
-            pcm16[i] = old
-            p++
-            if (p == r.size) p = 0
-        }
-        pos = p
         measureOut(pcm16, offset, length, sampleRateHz, channelCount, d)
     }
 

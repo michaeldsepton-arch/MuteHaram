@@ -52,14 +52,21 @@ interface AudioProcessor {
      * @param length number of shorts (not bytes) valid starting at offset.
      * @param sampleRateHz sample rate of the stream being written.
      * @param channelCount channels in the stream (1 = mono, 2 = stereo, etc).
+     * @param streamId identifies the AudioTrack this buffer belongs to; an app
+     *   can have several open at once and any per-stream state (delay lines,
+     *   model context) must not be shared between them.
      */
     fun process(
         pcm16: ShortArray,
         offset: Int,
         length: Int,
         sampleRateHz: Int,
-        channelCount: Int
+        channelCount: Int,
+        streamId: Int
     )
+
+    /** The stream was flushed/stopped/released: drop any buffered audio for it. */
+    fun reset(streamId: Int) {}
 }
 
 /**
@@ -76,7 +83,8 @@ class PassthroughProcessor : AudioProcessor {
         offset: Int,
         length: Int,
         sampleRateHz: Int,
-        channelCount: Int
+        channelCount: Int,
+        streamId: Int
     ) {
         // Intentionally a no-op.
     }
@@ -125,7 +133,8 @@ class StreamingAudioProcessor(
         offset: Int,
         length: Int,
         sampleRateHz: Int,
-        channelCount: Int
+        channelCount: Int,
+        streamId: Int
     ) {
         val floats = FloatArray(length) { pcm16[offset + it] / 32768f }
         buffer.push(floats, 0, length)

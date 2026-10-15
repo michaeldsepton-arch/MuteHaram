@@ -80,6 +80,26 @@ class AudioTrackHook : IXposedHookLoadPackage {
         hookByteBufferWrite(lpparam)
 
         hookClockShift()
+        hookStreamReset()
+    }
+
+    /** flush() (seek), stop() and release() end a stream's audio: clear its delay line. */
+    private fun hookStreamReset() {
+        for (name in listOf("flush", "stop", "release")) {
+            try {
+                XposedHelpers.findAndHookMethod(
+                    AudioTrack::class.java,
+                    name,
+                    object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) {
+                            HookConfig.processor.reset(System.identityHashCode(param.thisObject))
+                        }
+                    }
+                )
+            } catch (t: Throwable) {
+                Log.w(TAG, "$name() not hookable", t)
+            }
+        }
     }
 
     /**
@@ -165,7 +185,8 @@ class AudioTrackHook : IXposedHookLoadPackage {
                         val sizeInShorts = param.args[2] as Int
                         HookConfig.processor.process(
                             buffer, offset, sizeInShorts,
-                            track.sampleRate, track.channelCount
+                            track.sampleRate, track.channelCount,
+                            System.identityHashCode(track)
                         )
                         // buffer was modified in place; param.args[0]
                         // already points at it, nothing further needed.
@@ -206,7 +227,8 @@ class AudioTrackHook : IXposedHookLoadPackage {
 
                         HookConfig.processor.process(
                             shorts, 0, shortCount,
-                            track.sampleRate, track.channelCount
+                            track.sampleRate, track.channelCount,
+                            System.identityHashCode(track)
                         )
 
                         val outBb = ByteBuffer.wrap(bytes, offset, sizeInBytes)
@@ -255,7 +277,8 @@ class AudioTrackHook : IXposedHookLoadPackage {
 
                         HookConfig.processor.process(
                             shorts, 0, shortCount,
-                            track.sampleRate, track.channelCount
+                            track.sampleRate, track.channelCount,
+                            System.identityHashCode(track)
                         )
 
                         for (i in 0 until shortCount) {
