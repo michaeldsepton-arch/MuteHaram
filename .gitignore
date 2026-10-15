@@ -16,3 +16,4 @@ pc/config.json
 pc/tools/
 __pycache__/
 *.pyc
+pc/logs/
