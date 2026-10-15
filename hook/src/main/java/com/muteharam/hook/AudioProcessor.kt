@@ -36,6 +36,9 @@ interface AudioProcessor {
      */
     val latencyMs: Int get() = 0
 
+    /** Test switch: false disables the clock shift (control case). */
+    val shiftClock: Boolean get() = true
+
     /**
      * @param pcm16 interleaved 16-bit PCM samples, modified in place.
      * @param offset start index into pcm16 for this buffer.

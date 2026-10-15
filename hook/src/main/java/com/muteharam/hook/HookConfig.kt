@@ -35,5 +35,5 @@ object HookConfig {
      * See StreamingAudioProcessor's doc comment for the latency
      * budget that window size needs to respect.
      */
-    val processor: AudioProcessor = PassthroughProcessor()
+    val processor: AudioProcessor = DelayTestProcessor() // passthrough unless debug.muteharam.delay_ms is set
 }

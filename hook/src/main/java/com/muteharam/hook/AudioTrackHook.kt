@@ -1,5 +1,6 @@
 package com.muteharam.hook
 
+import android.media.AudioFormat
 import android.media.AudioTrack
 import android.util.Log
 import de.robv.android.xposed.IXposedHookLoadPackage
@@ -21,6 +22,16 @@ private const val TAG = "MuteHaramHook"
  * fully qualified name.
  */
 class AudioTrackHook : IXposedHookLoadPackage {
+
+    private val seen = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    /** Log once per overload so logcat tells us which write() the app uses and in what format. */
+    private fun logFirst(kind: String, track: AudioTrack) {
+        if (seen.putIfAbsent(kind, true) == null) {
+            Log.i(TAG, "write($kind) FIRST CALL: rate=${track.sampleRate} " +
+                "ch=${track.channelCount} encoding=${track.audioFormat} (2=PCM16, 4=float)")
+        }
+    }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
         // No package filter on purpose: scoping is already done by
@@ -91,8 +102,11 @@ class AudioTrackHook : IXposedHookLoadPackage {
         }
     }
 
-    private fun shiftFrames(track: AudioTrack): Int =
-        (HookConfig.processor.latencyMs.toLong() * track.sampleRate / 1000).toInt()
+    private fun shiftFrames(track: AudioTrack): Int {
+        val p = HookConfig.processor
+        if (!p.shiftClock) return 0
+        return (p.latencyMs.toLong() * track.sampleRate / 1000).toInt()
+    }
 
     private fun hookShortArrayWrite(lpparam: XC_LoadPackage.LoadPackageParam) {
         try {
@@ -105,6 +119,7 @@ class AudioTrackHook : IXposedHookLoadPackage {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val track = param.thisObject as AudioTrack
+                        logFirst("short[]", track)
                         val buffer = param.args[0] as ShortArray
                         val offset = param.args[1] as Int
                         val sizeInShorts = param.args[2] as Int
@@ -134,6 +149,8 @@ class AudioTrackHook : IXposedHookLoadPackage {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val track = param.thisObject as AudioTrack
+                        logFirst("byte[]", track)
+                        if (track.audioFormat != AudioFormat.ENCODING_PCM_16BIT) return
                         val bytes = param.args[0] as ByteArray
                         val offset = param.args[1] as Int
                         val sizeInBytes = param.args[2] as Int
@@ -175,6 +192,8 @@ class AudioTrackHook : IXposedHookLoadPackage {
                 object : XC_MethodHook() {
                     override fun beforeHookedMethod(param: MethodHookParam) {
                         val track = param.thisObject as AudioTrack
+                        logFirst("ByteBuffer", track)
+                        if (track.audioFormat != AudioFormat.ENCODING_PCM_16BIT) return
                         val buf = param.args[0] as ByteBuffer
                         val sizeInBytes = param.args[1] as Int
 
