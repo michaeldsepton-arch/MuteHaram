@@ -51,9 +51,28 @@ object NativeBridge {
         }
     }
 
+    /** Name of the app process we're running in (e.g. "com.cinehd"), from /proc. */
+    private fun processPackage(): String? = try {
+        File("/proc/self/cmdline").readText().trim('\u0000').substringBefore('\u0000').substringBefore(':')
+            .takeIf { it.isNotEmpty() }
+    } catch (t: Throwable) {
+        null
+    }
+
     private fun moduleApkPath(): String? {
-        val loader = NativeBridge::class.java.classLoader?.toString() ?: return null
-        return Regex("zip file \"([^\"]+\\.apk)\"").find(loader)?.groupValues?.get(1)
+        // Primary: where LSPatch unpacks the embedded module.
+        processPackage()?.let { pkg ->
+            for (base in listOf("/data/user/0/$pkg", "/data/data/$pkg")) {
+                val dir = File(base, "cache/lspatch/com.muteharam.hook")
+                val apk = dir.listFiles { f -> f.name.endsWith(".apk") }
+                    ?.maxByOrNull { it.lastModified() }
+                if (apk != null) return apk.absolutePath
+            }
+        }
+        // Fallback: parse the class loader description.
+        val loader = NativeBridge::class.java.classLoader?.toString()
+        Log.w(TAG, "module APK not found under cache/lspatch; class loader = $loader")
+        return loader?.let { Regex("(?:zip|dex) file \"([^\"]+\\.apk)\"").find(it)?.groupValues?.get(1) }
     }
 
     private fun loadLibraries(): Boolean {
