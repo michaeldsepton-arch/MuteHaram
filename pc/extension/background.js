@@ -7,12 +7,21 @@
 const HELPER = "http://127.0.0.1:47800";
 const MEDIA_RE = /\.(m3u8|mpd|mp4|m4v|webm|mkv|mov)(\?|#|$)/i;
 const SKIP_RE = /(\.ts(\?|$)|\.m4s(\?|$)|\.aac(\?|$)|\.vtt|\.srt|\/seg[-_]?\d|thumb|sprite|storyboard|\.mp4\.(jpg|png))/i;
+const SUB_RE = /\.(vtt|srt|ass|ssa)(\?|#|$)/i;
 const KEEP_HEADERS = ["referer", "user-agent", "cookie", "origin", "authorization"];
 const YT_RE = /^https:\/\/((www|m|music)\.)?youtube\.com\/(watch|shorts|live)|^https:\/\/youtu\.be\//;
 
 const found = {}; // tabId -> [{url, headers, t}]
 
+const subsFound = {}; // tabId -> [caption file urls]
+
 function onMediaRequest(d) {
+  if (d.tabId >= 0 && SUB_RE.test(d.url)) {
+    const l = (subsFound[d.tabId] ||= []);
+    if (!l.includes(d.url)) l.push(d.url);
+    if (l.length > 12) l.shift();
+    return;
+  }
   if (d.tabId < 0 || !MEDIA_RE.test(d.url) || SKIP_RE.test(d.url)) return;
   const headers = {};
   for (const h of d.requestHeaders || []) {
@@ -32,9 +41,9 @@ try {
   chrome.webRequest.onSendHeaders.addListener(onMediaRequest, { urls: ["<all_urls>"] }, ["requestHeaders"]);
 }
 
-chrome.tabs.onRemoved.addListener((id) => delete found[id]);
+chrome.tabs.onRemoved.addListener((id) => { delete found[id]; delete subsFound[id]; });
 chrome.tabs.onUpdated.addListener((id, info) => {
-  if (info.status === "loading" && info.url) found[id] = []; // new page in this tab
+  if (info.status === "loading" && info.url) { found[id] = []; subsFound[id] = []; } // new page in this tab
 });
 
 function pickCandidate(list) {
@@ -94,14 +103,14 @@ async function openInPlayer(tab, pip) {
   const start = await pagePosition(tab.id);
   let payload;
   if (YT_RE.test(tab.url || "")) {
-    payload = { url: tab.url, start, pip };
+    payload = { url: tab.url, start, pip, subs: subsFound[tab.id] || [] };
   } else {
     const c = pickCandidate(found[tab.id]);
     if (!c) {
       return badge(tab.id, "?", "#b26a00",
         "No video stream seen on this page yet. Press play on the video, wait a few seconds, then click again.");
     }
-    payload = { url: c.url, headers: c.headers, referer: c.headers.Referer || tab.url, start, page: tab.url, title: tab.title, pip };
+    payload = { url: c.url, headers: c.headers, referer: c.headers.Referer || tab.url, start, page: tab.url, title: tab.title, pip, subs: subsFound[tab.id] || [] };
   }
   try {
     const r = await fetch(HELPER + "/play", {

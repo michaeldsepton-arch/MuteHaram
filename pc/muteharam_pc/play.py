@@ -39,7 +39,12 @@ def is_direct(url):
     return os.path.exists(url) or bool(DIRECT.search(url))
 
 
-def resolve(url, headers, cfg, log):
+def mpv_list_value(v):
+    """mpv separates key=value pairs with commas; quote a value that contains commas as %LEN%value."""
+    return f"%{len(v)}%{v}"
+
+
+def resolve(url, headers, cfg, log, sub_langs="en.*,ar.*"):
     """-> dict(media_url, headers, duration, mpv_url, mpv_args)"""
     if is_direct(url):
         mpv_args = []
@@ -66,7 +71,9 @@ def resolve(url, headers, cfg, log):
         mpv_url=url,
         mpv_args=[f"--script-opts=ytdl_hook-ytdl_path={cfg['yt_dlp']}",
                   # picture only: the cleaned audio is attached separately
-                  "--ytdl-format=bestvideo[height<=?1080]/bestvideo/best"],
+                  "--ytdl-format=bestvideo[height<=?1080]/bestvideo/best",
+                  # keep the video's captions (uploaded ones and YouTube's automatic ones)
+                  "--ytdl-raw-options=write-subs=,write-auto-subs=,sub-langs=" + mpv_list_value(sub_langs)],
     )
 
 
@@ -90,19 +97,27 @@ def main(argv=None):
 
 
 def run(argv=None):
+    S = config.settings()
     ap = argparse.ArgumentParser(prog="muteharam_pc.play")
     ap.add_argument("url")
     ap.add_argument("--start", type=float, default=0.0, help="start position in seconds")
     ap.add_argument("--header", action="append", default=[], help='"Name: value" (repeatable)')
     ap.add_argument("--referer")
     ap.add_argument("--user-agent")
-    ap.add_argument("--window", type=float, default=10.0, help="AI window, seconds (more = better, slower)")
-    ap.add_argument("--hop", type=float, default=6.0, help="seconds produced per window")
-    ap.add_argument("--gain", type=float, default=1.0, help="1.0 = remove all music, 0.5 = halve it")
-    ap.add_argument("--pip", action="store_true",
+    ap.add_argument("--window", type=float, default=S["window"], help="AI window, seconds (more = better, slower)")
+    ap.add_argument("--hop", type=float, default=S["hop"], help="seconds produced per window")
+    ap.add_argument("--gain", type=float, default=S["gain"], help="1.0 = remove fully, 0.5 = halve it, 1.3 = push harder")
+    ap.add_argument("--mode", choices=["music", "speech"], default=S["mode"],
+                    help='"music" removes the music; "speech" keeps only voices (also drops sound effects)')
+    ap.add_argument("--pip", action="store_true", default=bool(S["pip"]),
                     help="start in a small always-on-top corner window (press P in the player to toggle)")
+    ap.add_argument("--sub-langs", default=S["sub_langs"],
+                    help='caption languages to fetch for YouTube, yt-dlp style, e.g. "en.*,ar.*" or "all"')
+    ap.add_argument("--page", help="address of the web page (fallback: yt-dlp tries to find the stream itself)")
+    ap.add_argument("--sub", action="append", default=[], metavar="URL",
+                    help="caption file (.vtt/.srt/...) to load (repeatable)")
     ap.add_argument("--cpu", action="store_true", help="do not use the GPU")
-    ap.add_argument("--channels", choices=["auto", "mono", "stereo"], default="auto",
+    ap.add_argument("--channels", choices=["auto", "mono", "stereo"], default=S["channels"],
                     help="stereo = clean left and right separately (needs a GPU); mono = clean the mix once")
     ap.add_argument("--no-player", action="store_true", help="only serve the audio (prints its address)")
     ap.add_argument("--mpv-arg", action="append", default=[], help="extra argument for mpv (repeatable)")
@@ -119,28 +134,44 @@ def run(argv=None):
     if a.user_agent:
         headers["User-Agent"] = a.user_agent
 
-    r = resolve(a.url, headers, cfg, log)
-    src = MediaSource(r["media_url"], r["headers"], cfg["ffmpeg"], cfg["ffprobe"])
+    r = resolve(a.url, headers, cfg, log, a.sub_langs)
     session = srv = None
     problem = None
-    try:
-        session = Session(src, duration=r["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
-                          device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
-                          channels_mode=a.channels)
-        ok, why = src.probe(max(0.0, min(a.start, (r["duration"] or 1e9) - 3)))
-        if not ok:
-            raise RuntimeError(why)
+    audio_url = None
+
+    def build(rr):
+        """Open the media for the AI and check that audio can really be decoded."""
+        src = MediaSource(rr["media_url"], rr["headers"], cfg["ffmpeg"], cfg["ffprobe"])
+        sess = Session(src, duration=rr["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
+                       device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
+                       channels_mode=a.channels, mode=a.mode)
+        try:
+            ok, why = src.probe(max(0.0, min(a.start, (rr["duration"] or 1e9) - 3)))
+            if not ok:
+                raise RuntimeError(why)
+        except Exception:
+            sess.close()
+            raise
+        return sess
+
+    attempts = [("the stream address", lambda: r)]
+    if a.page and is_direct(a.url):
+        attempts.append(("the web page (yt-dlp)", lambda: resolve(a.page, headers, cfg, log, a.sub_langs)))
+    errors = []
+    for label, make in attempts:
+        try:
+            session = build(make())
+            problem = None
+            break
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            errors.append(f"{label}: {ex}")
+            problem = RuntimeError(" ; ".join(errors))
+    if session is not None:
         srv = make_server(session)
         audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"
         log("cleaned audio at", audio_url)
-    except Exception as ex:
-        import traceback
-        traceback.print_exc()
-        problem = ex
-        if "ffprobe" in repr(ex).lower() or isinstance(ex, (ValueError, subprocess.TimeoutExpired)):
-            nl = chr(10)
-            raise SystemExit("MuteHaram could not read this video's audio. The link may have expired, "
-                             "need a login, or be copy-protected." + nl + nl + "Technical detail: " + repr(ex))
     if a.no_player:
         if problem:
             raise SystemExit(f"engine failed: {problem!r}")
@@ -172,6 +203,8 @@ def run(argv=None):
         cmd += [f"--config-dir={cfg_dir}"]   # uosc controls, click-to-pause, our key bindings
     else:
         log("uosc is not installed (run setup_pc.py): using mpv's plain controls")
+    for sub in a.sub:
+        cmd.append(f"--sub-file={sub}")
     cmd += ["--force-window=immediate", "--network-timeout=120", "--cache=yes",
             "--title=MuteHaram - ${media-title}", *r["mpv_args"], *a.mpv_arg]
     if a.start > 0:

@@ -32,3 +32,29 @@ def load():
     if missing:
         raise SystemExit("Missing: " + ", ".join(missing) + "\nRun  python setup_pc.py  (or setup.bat) first.")
     return out
+
+
+SETTINGS_PATH = os.path.join(PC_DIR, "settings.json")
+DEFAULT_SETTINGS = {
+    "mode": "music",          # "music": remove the music;  "speech": keep ONLY the voices (also removes sound effects)
+    "gain": 1.0,              # 1.0 = remove fully, 0.5 = halve it, 1.3 = push a little harder
+    "window": 10.0,           # AI window in seconds (bigger = better, slower)
+    "hop": 6.0,
+    "channels": "auto",       # auto | mono | stereo
+    "sub_langs": "en.*,ar.*", # YouTube caption languages to load (yt-dlp style, "all" for everything)
+    "pip": False,             # always start in the small corner window
+}
+
+
+def settings():
+    """pc/settings.json overrides the defaults above (unknown keys are ignored). Command-line options win."""
+    out = dict(DEFAULT_SETTINGS)
+    try:
+        if os.path.exists(SETTINGS_PATH):
+            user = json.load(open(SETTINGS_PATH, encoding="utf-8"))
+            for k in out:
+                if k in user:
+                    out[k] = user[k]
+    except Exception as ex:
+        print(f"settings.json could not be read ({ex}); using defaults", flush=True)
+    return out

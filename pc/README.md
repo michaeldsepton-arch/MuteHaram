@@ -51,6 +51,19 @@ Check what a computer is missing without installing: `python setup_pc.py --check
      address, so play the video for a few seconds first. The badge shows
      **OK** (opened), **?** (no stream seen yet) or **ERR** (helper not running).
 
+**Settings (optional).** Copy `settings.example.json` to `settings.json` in the `pc` folder and edit it; every
+run (including the browser button) uses it. The useful ones:
+- `"gain": 1.4` removes the music harder (more music gone, a little more risk to voices); `1.0` is the default,
+  `0.5` keeps half of it.
+- `"mode": "speech"` keeps ONLY voices and drops sound effects and music (also drops singing).
+- `"sub_langs"`: which YouTube caption languages to load (`"all"` for everything).
+- `"pip": true` always opens the small corner window.
+
+**Captions.** YouTube captions (uploaded and automatic) are loaded and the first language in
+`en, ar` is shown automatically; use the player's subtitle button to switch or turn them off. On other sites,
+captions inside the stream are picked up by the player, and caption files the browser extension sees
+(`.vtt/.srt`) are loaded too.
+
 **Player controls.** The player uses the free *uosc* add-on (installed by `setup.bat`): move the mouse
 anywhere over the video and the controls appear (with a tooltip when you hover a button); click the
 picture to pause/resume; double-click for fullscreen; right-click for the menu (audio tracks, speed ...);

@@ -1,0 +1,9 @@
+{
+  "mode": "music",
+  "gain": 1.0,
+  "window": 10.0,
+  "hop": 6.0,
+  "channels": "auto",
+  "sub_langs": "en.*,ar.*",
+  "pip": false
+}

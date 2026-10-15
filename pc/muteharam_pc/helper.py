@@ -78,6 +78,11 @@ class Handler(BaseHTTPRequestHandler):
             start = float(req.get("start") or 0)
             if start > 1:
                 cmd += ["--start", str(start)]
+            if req.get("page") and str(req["page"]).lower().startswith(("http://", "https://")):
+                cmd += ["--page", str(req["page"])]
+            for sub in (req.get("subs") or [])[:6]:
+                if str(sub).lower().startswith(("http://", "https://")):
+                    cmd += ["--sub", str(sub)]
             if req.get("pip"):
                 cmd += ["--pip"]
             if req.get("referer"):

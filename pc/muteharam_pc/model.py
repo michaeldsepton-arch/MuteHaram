@@ -20,8 +20,23 @@ def pick_device(prefer=None):
     return torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
+# TIGER-DnR is three separate networks (dialogue / effects / music), each with 3 outputs; the
+# output that is the network's own target: music net -> 0, effects net -> 1, dialogue net -> 2.
+TARGET_INDEX = {"music": 0, "effect": 1, "dialog": 2}
+
+
+def load_network(kind="music", models_dir=None, device=None):
+    """Returns (network, device, target_index). network(x[B,1,T] float) -> [B,3,T]."""
+    net, device = _load(kind, models_dir, device)
+    return net, device, TARGET_INDEX[kind]
+
+
 def load_music_model(models_dir=None, device=None):
     """Returns (network, device). network(x[B,1,T] float) -> [B,3,T]; source 0 is music."""
+    return _load("music", models_dir, device)
+
+
+def _load(kind, models_dir=None, device=None):
     models_dir = models_dir or DEFAULT_MODELS_DIR
     cfg_path = os.path.join(models_dir, "config.json")
     weights = os.path.join(models_dir, "model.safetensors")
@@ -30,7 +45,7 @@ def load_music_model(models_dir=None, device=None):
             f"Model files not found in {models_dir}. Run  python setup_pc.py  to download them.")
     full = TIGERDNR(**json.load(open(cfg_path)))
     full.load_state_dict(load_file(weights))
-    net = full.music.eval()  # the dialogue/effects networks aren't needed
+    net = getattr(full, kind).eval()  # only the one network we need goes to the GPU
     device = pick_device(device)
     net.to(device)
     for p in net.parameters():
