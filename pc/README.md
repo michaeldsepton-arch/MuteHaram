@@ -143,3 +143,7 @@ addresses), the extension can clean the page's own sound while it plays.
 Needs the graphics card (about real-time speed). If it fails, see `pc/logs/live-server.log`.
 Picture-in-picture windows show the original picture, not the delayed one.
 Test: `python tests/test_live_server.py`.
+
+If voice and picture are not lined up in live mode, click the video once, then press
+**Alt + .** (picture later) or **Alt + ,** (picture earlier) in 40 ms steps; hold **Shift** as well
+for 200 ms steps. The page shows the current offset and remembers it.

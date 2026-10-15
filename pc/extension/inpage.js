@@ -130,6 +130,8 @@
   let hop = 0, margin = 0, latencyFrames = 0, delayMs = 0;
   let videoOffsetMs = Number(localStorage.getItem("mh_video_offset_ms") || 0);
   let closed = false, retryTimer = null;
+  // the sound card needs a moment before the sound is heard; hold the picture back by that too
+  const outLatMs = () => { try { return ((ctx && (ctx.outputLatency || ctx.baseLatency)) || 0) * 1000; } catch (e) { return 0; } };
 
   // ---------------------------------------------------------------- picture delay (canvas over the video)
   const canvas = document.createElement("canvas");
@@ -189,7 +191,7 @@
     const vw = video.videoWidth, vh = video.videoHeight;
     if (vw && vh && enabled) {
       const sc = Math.min(1, cfg.maxWidth / vw);
-      const due = performance.now() + delayMs + videoOffsetMs;
+      const due = performance.now() + delayMs + videoOffsetMs + outLatMs();
       createImageBitmap(video, { resizeWidth: Math.round(vw * sc), resizeHeight: Math.round(vh * sc), resizeQuality: "low" })
         .then((bm) => { if (enabled) queue.push({ bm, due }); else bm.close(); })
         .catch(() => {});
@@ -357,10 +359,10 @@
   video.addEventListener("emptied", () => restart("emptied"));
   video.addEventListener("loadstart", () => restart("loadstart"));
 
-  // sync fine-tuning: Alt+, makes the picture 40 ms earlier, Alt+. 40 ms later
+  // sync fine-tuning: Alt+, makes the picture earlier, Alt+. later (40 ms; with Shift 200 ms)
   window.addEventListener("keydown", (e) => {
     if (!e.altKey || (e.key !== "," && e.key !== ".")) return;
-    videoOffsetMs += e.key === "." ? 40 : -40;
+    videoOffsetMs += (e.key === "." ? 1 : -1) * (e.shiftKey ? 200 : 40);
     localStorage.setItem("mh_video_offset_ms", String(videoOffsetMs));
     say("picture offset " + videoOffsetMs + " ms");
   }, true);
