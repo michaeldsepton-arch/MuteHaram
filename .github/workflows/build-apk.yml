@@ -34,10 +34,19 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Download the ready-made TIGER model for the benchmark app
+      - name: Set up Python (model re-timing tool)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build the benchmark models (download TIGER, re-time to shorter chunks)
         run: |
+          pip install tflite numpy
           mkdir -p bench/src/main/assets
           curl -L --fail -o bench/src/main/assets/tiger_music_fp16.tflite             https://huggingface.co/litert-community/TIGER-DnR-LiteRT/resolve/main/tiger_music_fp16.tflite
+          for T in 128 176 256; do
+            python hook/research/retime/retime.py bench/src/main/assets/tiger_music_fp16.tflite               bench/src/main/assets/tiger_music_T$T.tflite --frames-old 1040 --frames-new $T
+          done
           ls -l bench/src/main/assets
 
       - name: Build debug APKs (all modules)
