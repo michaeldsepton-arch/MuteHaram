@@ -23,8 +23,11 @@ private const val TAG = "MuteHaramHook"
 class AudioTrackHook : IXposedHookLoadPackage {
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
-        if (lpparam.packageName !in HookConfig.TARGET_PACKAGES) return
-
+        // No package filter on purpose: scoping is already done by
+        // LSPosed's per-app scope (rooted) or by which APK was patched
+        // (LSPatch/NPatch, rootless). A hard-coded list would silently
+        // skip e.g. ReVanced Extended, whose package name differs from
+        // stock YouTube's. TARGET_PACKAGES is kept for documentation.
         Log.i(TAG, "Hooking AudioTrack in ${lpparam.packageName}")
 
         // AudioTrack.write has several overloads depending on how the
