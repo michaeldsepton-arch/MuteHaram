@@ -103,8 +103,10 @@ class DelayTestProcessor : AudioProcessor {
     ) {
         poll()
         val d = delayMs
+        measureIn(pcm16, offset, length)
         if (d <= 0) {
             if (ring.isNotEmpty()) ring = ShortArray(0)
+            measureOut(pcm16, offset, length, sampleRateHz, channelCount, d)
             return
         }
         val needed = (sampleRateHz.toLong() * d / 1000).toInt() * channelCount
@@ -125,5 +127,33 @@ class DelayTestProcessor : AudioProcessor {
             if (p == r.size) p = 0
         }
         pos = p
+        measureOut(pcm16, offset, length, sampleRateHz, channelCount, d)
+    }
+
+    // --- diagnostics: loudness in vs out, logged every ~250 ms. If the delay
+    // works, "out" at time t equals "in" at time t - delay. ---
+    private var inSq = 0.0
+    private var outSq = 0.0
+    private var cnt = 0L
+
+    private fun measureIn(a: ShortArray, off: Int, len: Int) {
+        var s = 0.0
+        for (i in off until off + len) { val v = a[i] / 32768.0; s += v * v }
+        inSq += s
+    }
+
+    private fun measureOut(a: ShortArray, off: Int, len: Int, rate: Int, ch: Int, d: Int) {
+        var s = 0.0
+        for (i in off until off + len) { val v = a[i] / 32768.0; s += v * v }
+        outSq += s
+        cnt += len
+        if (cnt >= rate.toLong() * ch / 4) {
+            fun rms(x: Double) = Math.sqrt(x / cnt)
+            android.util.Log.i(
+                "MuteHaramHook",
+                "lvl in=%.4f out=%.4f delay=%d t=%d".format(rms(inSq), rms(outSq), d, System.currentTimeMillis() % 100000)
+            )
+            inSq = 0.0; outSq = 0.0; cnt = 0
+        }
     }
 }
