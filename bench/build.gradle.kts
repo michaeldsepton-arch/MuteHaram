@@ -22,6 +22,8 @@ android {
     }
     kotlinOptions {
         jvmTarget = "17"
+        // LiteRT 2.x ships Kotlin 2.3 metadata; this project builds with 1.9.
+        freeCompilerArgs += "-Xskip-metadata-version-check"
     }
     // The model is copied out of the APK at first run; keep it uncompressed.
     androidResources { noCompress += "tflite" }
