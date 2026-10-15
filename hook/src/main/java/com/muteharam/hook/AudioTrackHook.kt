@@ -101,8 +101,10 @@ class AudioTrackHook : IXposedHookLoadPackage {
                     override fun afterHookedMethod(param: MethodHookParam) {
                         val track = param.thisObject as AudioTrack
                         val shift = shiftFrames(track)
+                        val raw = param.result as Int
+                        logClock("headPos", raw.toLong(), shift)
                         if (shift > 0) {
-                            param.result = maxOf(0, (param.result as Int) - shift)
+                            param.result = maxOf(0, raw - shift)
                         }
                     }
                 }
@@ -117,6 +119,7 @@ class AudioTrackHook : IXposedHookLoadPackage {
                         val track = param.thisObject as AudioTrack
                         val ts = param.args[0] as android.media.AudioTimestamp
                         val shift = shiftFrames(track)
+                        logClock("timestamp", ts.framePosition, shift)
                         if (shift > 0) {
                             ts.framePosition = maxOf(0L, ts.framePosition - shift)
                         }
@@ -126,6 +129,16 @@ class AudioTrackHook : IXposedHookLoadPackage {
             Log.i(TAG, "Hooked AudioTrack clock (getPlaybackHeadPosition/getTimestamp)")
         } catch (t: Throwable) {
             Log.w(TAG, "clock-shift hooks failed", t)
+        }
+    }
+
+    private val clockCalls = java.util.concurrent.ConcurrentHashMap<String, Int>()
+
+    /** Shows whether (and how often) the player asks for the clock we shift. */
+    private fun logClock(kind: String, raw: Long, shift: Int) {
+        val n = clockCalls.merge(kind, 1, Int::plus) ?: 1
+        if (n == 1 || n % 300 == 0) {
+            Log.i(TAG, "clock $kind call #$n raw=$raw shiftedBy=$shift frames")
         }
     }
 
