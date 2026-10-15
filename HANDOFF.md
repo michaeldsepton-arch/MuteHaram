@@ -5,7 +5,7 @@ so work can resume cleanly from a different session/tool (e.g. picking
 this up in Claude Code on your own machine, with full internet access
 this sandbox doesn't have).
 
-**Last updated:** 2026-10-14 evening: NO ROOT NEEDED, video re-sync verified (see "ROOT NOT NEEDED" section)
+**Last updated:** 2026-10-14 night: no root; video re-sync verified in YouTube AND CineHD (native AAudio hook). Next: the model.
 
 ## Sequencing decision: validate cheap before building expensive (important, read this first)
 
@@ -178,8 +178,26 @@ CineHD not tested yet (needs its package name and the same patch steps).
   place, and shift `AAudioStream_getTimestamp`/frame counters for the clock
   (Chromium derives its A/V delay from them). Needs inline hooking in libaaudio.so
   (Dobby/ShadowHook-style) from the module's own native lib, extracted from the
-  embedded module APK. Estimated as a separate chunk of work; **parked until the
-  model works on YouTube.**
+  embedded module APK.
+
+**UPDATE: CineHD native hook BUILT AND VERIFIED (2026-10-14, night).**
+`hook/src/main/cpp/aaudio_hook.cpp` + `NativeBridge.kt`, ShadowHook 2.0.0 (Maven
+AAR, prefab) for inline hooks of `libaaudio.so`:
+`AAudioStreamBuilder_setDataCallback` (wrap callback, delay float PCM in place),
+`AAudioStream_getTimestamp` (framePosition -= shift => Chromium's
+`GetOutputDelay` grows, video waits), `AAudioStream_close` (free ring).
+Under LSPatch the module's `.so` files are loaded straight from the embedded
+APK (`<app>/cache/lspatch/com.muteharam.hook/*.apk!/lib/arm64-v8a/`), found via
+`/proc/self/cmdline`; classloader-string parsing did NOT work. CI needs
+`ndk;27.3.13750724` and `cmake;3.22.1` (workflow updated).
+User-verified in CineHD with delay 1500: clean sound, lips match, 1.5 s picture
+freeze at start; control (noclock=1) lags. CineHD video stream = 44.1 kHz stereo
+float, 1024 frames/callback; ads and a silent keep-alive stream use other
+streams (48 kHz) -- processing is per stream.
+Open: pause/seek may leak up to D of old audio (no reset hooks on AAudio yet).
+Settings pushed from Java to native every 500 ms (Settings.Global
+`muteharam_*`; stale `debug.muteharam.*` system props can still override at
+very early startup).
 
 ---
 
