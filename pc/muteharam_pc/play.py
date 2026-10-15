@@ -102,6 +102,16 @@ def classify(url, headers):
     if "video" in ctype.lower() or body[4:8] in (b"ftyp",) or body[:4] == b"\x1aE\xdf\xa3":
         return dict(kind="video", note="video file")
     enc = rh.get("Content-Encoding") or rh.get("content-encoding") or "none"
+    head = stripped[:120]
+    readable_text = len(head) >= 8 and b" " in head and all(32 <= c < 127 or c in (9, 10, 13) for c in head)
+    if stripped[:1] in (b"{", b"[") or readable_text:
+        # readable text / JSON: an error message or similar, not scrambled data
+        return dict(kind="other", note=f"the server returned text, not a playlist: {stripped[:90]!r}")
+    if any(k in ctype.lower() for k in ("mpegurl", "m3u")) or url.split("?")[0].lower().endswith(".m3u8"):
+        # claims to be a playlist but is not readable as one: encrypted / scrambled by the site
+        return dict(kind="scrambled",
+                    note=f"the site SCRAMBLES this playlist (it starts with {body[:24]!r}); only that site's own "
+                         f"web page can read it")
     return dict(kind="other", note=f"unrecognised content (type {ctype or 'none'}, encoding {enc}); "
                                    f"it starts with {body[:48]!r}{extra}")
 
@@ -253,6 +263,11 @@ def run(argv=None):
             notes[u] = classify(u, headers)
             log(f"candidate {u[:110]}: {notes[u]['kind']} - {notes[u]['note']}")
         order.sort(key=lambda u: rank.get(notes[u]["kind"], 9))
+    if notes and all(n["kind"] == "scrambled" for n in notes.values()):
+        raise SystemExit(
+            "This website scrambles (encrypts) its video playlists, so that only its own web page can play "
+            "them. MuteHaram's player cannot read them, and this site is not supported." + chr(10) + chr(10) +
+            "Sites that use ordinary streams (like YouTube and CineHD) do work.")
     attempts = []
     if a.audio_src and a.audio_src.startswith(("http://", "https://")):
         notes[a.audio_src] = classify(a.audio_src, headers)

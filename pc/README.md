@@ -60,6 +60,12 @@ The extension keeps the stream address in the browser's session storage, so it i
 minutes after the video started (browsers stop and restart extension scripts, which used to make it forget).
 After updating, reload the extension on the browser's extensions page.
 
+**Sites that scramble their playlists are not supported.** Some sites encrypt the playlists of their videos so that
+only their own web page can play them; no ordinary player (mpv, ffmpeg, VLC) can read those. MuteHaram detects this
+(the playlist starts with random-looking text instead of `#EXTM3U`) and says so in a message box. YouTube and sites
+with ordinary streams (like CineHD) work. The player log (`pc\logs\play-*.log`) shows a `candidate ...` line for every
+stream address the page used and what each one really returns.
+
 **Settings (optional).** Copy `settings.example.json` to `settings.json` in the `pc` folder and edit it; every
 run (including the browser button) uses it. The useful ones:
 - `"gain": 1.4` removes the music harder (more music gone, a little more risk to voices); `1.0` is the default,
