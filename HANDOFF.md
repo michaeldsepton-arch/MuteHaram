@@ -199,6 +199,34 @@ Settings pushed from Java to native every 500 ms (Settings.Global
 `muteharam_*`; stale `debug.muteharam.*` system props can still override at
 very early startup).
 
+### Stage 2: model re-timing WORKS (2026-10-15)
+
+**Phone speed (Pixel 9 Pro, LiteRT GPU, original 12.06 s model):** 4.64 s per call,
+rock steady over 12 runs, thermal none, no NaN => 0.38 s compute per audio second.
+(Tablet = Galaxy Tab S7, the device the user mostly watches on: NOT measured yet.)
+
+**`hook/research/retime/retime.py` edits the ready-made `.tflite` to a different
+time length T** (instead of re-converting from PyTorch; the conversion code of
+the HF model is not public). It does shape inference through the whole graph
+(25k tensors, ~20 op types), patches RESHAPE/SLICE/RESIZE constants, and the five
+scalar constants that average over time (`1/65 ... 1/1040`, tensors 308/310/312/
+314/481 -> `1/(T/16)` ... `1/T`). Verified on the desktop CPU (litert venv) against
+the original PyTorch network via `ref_pytorch.py` + `check_tflite.py`:
+T=128/176/256 give rel.err 1.6-2.8%, corr 0.9996-0.9999 (the original 12 s file
+itself is 4.6%). LESSONS: (1) forgetting the 1/T constants gave corr 0.98;
+(2) constants are shared between ops, so patch from original values;
+(3) big constants live outside the buffer vector (check `Buffer.Size()`).
+Chunk = (T-1)*512 samples; T must be divisible by 16 (T=176 -> 2.03 s).
+CI builds the variants and bundles them into `bench-debug.apk`
+(buttons: 1.5 s / 2.0 s / 3.0 s / 12 s).
+
+**Next:** user runs bench on tablet + Pixel -> pick window/hop so that
+compute-per-audio-second x (window/hop) stays < ~0.7. Then stage 3: native
+pipeline (resample to 44.1k, STFT-free since the graph has the DFT in it, iSTFT +
+overlap-add in C++, LiteRT GPU on a worker thread, fixed output latency L, fall
+back to the original audio if a window is late) wired into the AAudio hook and
+the Java hook.
+
 ---
 
 ## The goal
