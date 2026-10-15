@@ -1,0 +1,18 @@
+# MuteHaram PC -- Python packages.
+# `python setup_pc.py` (or setup.bat) installs all of this for you and picks the
+# right PyTorch build for your graphics card. To install by hand instead:
+#
+#   NVIDIA GPU (GTX 10xx - RTX 40xx):
+#       pip install torch --index-url https://download.pytorch.org/whl/cu121
+#   NVIDIA RTX 50xx (Blackwell):
+#       pip install torch --index-url https://download.pytorch.org/whl/cu128
+#   no NVIDIA GPU (CPU only -- works but is slower than real time):
+#       pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   then:  pip install -r requirements.txt
+#
+# Not Python packages (setup_pc.py downloads these into pc/tools/ if missing):
+#   ffmpeg + ffprobe, mpv (the player), yt-dlp (YouTube and other sites)
+
+torch>=2.3
+numpy>=1.26
+safetensors>=0.4

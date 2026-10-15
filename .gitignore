@@ -9,3 +9,10 @@ captures/
 
 hook/research/out/
 bench/src/main/assets/*.tflite
+pc/tools/
+pc/models/
+pc/.venv/
+pc/config.json
+pc/tools/
+__pycache__/
+*.pyc
