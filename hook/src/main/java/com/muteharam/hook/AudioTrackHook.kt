@@ -14,6 +14,14 @@ import java.nio.ByteOrder
 private const val TAG = "MuteHaramHook"
 
 /**
+ * LSPosed/LSPatch call handleLoadPackage once per *package* loaded into a
+ * process (e.g. the app, its WebView and microG), but AudioTrack is one class
+ * per process. Hooking it each time stacks the callbacks, so every write was
+ * processed N times and the clock shifted N times. Install exactly once.
+ */
+private val hooksInstalled = java.util.concurrent.atomic.AtomicBoolean(false)
+
+/**
  * Entry point LSPosed calls once per app process that starts, for
  * every app on the device (that's how Xposed/LSPosed works -- your
  * module sees every process launch and decides whether to act).
@@ -61,6 +69,11 @@ class AudioTrackHook : IXposedHookLoadPackage {
     }
 
     override fun handleLoadPackage(lpparam: XC_LoadPackage.LoadPackageParam) {
+        if (!hooksInstalled.compareAndSet(false, true)) {
+            Log.i(TAG, "AudioTrack already hooked in this process; skipping ${lpparam.packageName}")
+            return
+        }
+
         // No package filter on purpose: scoping is already done by
         // LSPosed's per-app scope (rooted) or by which APK was patched
         // (LSPatch/NPatch, rootless). A hard-coded list would silently
