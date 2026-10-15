@@ -27,15 +27,23 @@ import kotlin.math.roundToInt
 class SeparationPipeline(
     val sampleRate: Int,
     val channels: Int,
-    private val model: ChunkModel,
+    private val estimator: MusicEstimator,
     marginSeconds: Double = 0.4,
     inferenceBudgetMs: Int = 900,
     slackMs: Int = 150,
     startWorker: Boolean = true,
     var musicGain: Float = 1f,
 ) {
+    /** Convenience: use an on-device [ChunkModel]. */
+    constructor(
+        sampleRate: Int, channels: Int, model: ChunkModel,
+        marginSeconds: Double = 0.4, inferenceBudgetMs: Int = 900, slackMs: Int = 150,
+        startWorker: Boolean = true, musicGain: Float = 1f,
+    ) : this(sampleRate, channels, ChunkModelEstimator(model), marginSeconds, inferenceBudgetMs,
+        slackMs, startWorker, musicGain)
+
     private val modelRate = ChunkModel.SAMPLE_RATE
-    private val chunk = model.chunkSamples                     // model domain samples
+    private val chunk = estimator.chunkSamples                 // model domain samples
 
     // ---- block geometry in the STREAM domain
     private val windowFrames = (chunk.toLong() * sampleRate / modelRate).toInt()      // Ws
@@ -57,12 +65,13 @@ class SeparationPipeline(
 
     private val toModel = Resampler(sampleRate, modelRate)
     private val fromModel = Resampler(modelRate, sampleRate)
-    private val stft = Stft()
     private val mixBuf = FloatArray(windowFrames)
 
     // stats
     @Volatile var blocksProcessed = 0L; private set
     @Volatile var blocksSkipped = 0L; private set
+    @Volatile var blocksFailed = 0L; private set
+    @Volatile var lastError: String? = null; private set
     @Volatile var lateFrames = 0L; private set
     @Volatile var lastInferenceMs = 0.0; private set
     @Volatile var maxInferenceMs = 0.0; private set
@@ -136,7 +145,7 @@ class SeparationPipeline(
     fun close() {
         stopped = true
         worker?.let { LockSupport.unpark(it) }
-        model.close()
+        estimator.close()
     }
 
     // ------------------------------------------------------------ worker
@@ -177,12 +186,20 @@ class SeparationPipeline(
             mixBuf[i] = s / channels
         }
         val t0 = System.nanoTime()
-        val atModel = toModel.process(mixBuf, windowFrames)
-        val chunkIn = FloatArray(chunk)
-        System.arraycopy(atModel, 0, chunkIn, 0, min(atModel.size, chunk))
-        val spec = model.estimateMusic(stft.reflectPad(chunkIn))
-        val musicModel = stft.inverse(spec.re, spec.im, spec.frames)
-        val back = fromModel.process(musicModel, musicModel.size)
+        val back: FloatArray
+        try {
+            val atModel = toModel.process(mixBuf, windowFrames)
+            val chunkIn = FloatArray(chunk)
+            System.arraycopy(atModel, 0, chunkIn, 0, min(atModel.size, chunk))
+            val musicModel = estimator.estimate(chunkIn)
+            back = fromModel.process(musicModel, musicModel.size)
+        } catch (t: Throwable) {
+            // AI unavailable (network down, GPU error ...): this block plays un-cleaned, the next one retries.
+            blocksFailed++
+            lastError = t.toString()
+            finishBlock(gen, k, ok = false)
+            return true
+        }
         val ms = (System.nanoTime() - t0) / 1e6
         lastInferenceMs = ms
         if (ms > maxInferenceMs) maxInferenceMs = ms

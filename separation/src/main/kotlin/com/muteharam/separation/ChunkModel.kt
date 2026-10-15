@@ -28,3 +28,27 @@ interface ChunkModel {
         const val WIN = 2048
     }
 }
+
+/**
+ * "Given a chunk of mono 44.1 kHz audio, return the music in it" -- the one thing
+ * the pipeline needs from the AI, wherever it runs (this phone's GPU, or a computer
+ * across Wi-Fi). Both directions use exactly [chunkSamples] samples.
+ */
+interface MusicEstimator {
+    val chunkSamples: Int
+    fun estimate(chunk: FloatArray): FloatArray
+    fun close() {}
+}
+
+/** Runs a fixed-shape on-device [ChunkModel]: reflect pad -> model -> inverse STFT. */
+class ChunkModelEstimator(private val model: ChunkModel) : MusicEstimator {
+    private val stft = Stft()
+    override val chunkSamples: Int get() = model.chunkSamples
+
+    override fun estimate(chunk: FloatArray): FloatArray {
+        val spec = model.estimateMusic(stft.reflectPad(chunk))
+        return stft.inverse(spec.re, spec.im, spec.frames)
+    }
+
+    override fun close() = model.close()
+}
