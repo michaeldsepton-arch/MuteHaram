@@ -170,13 +170,36 @@ try {
     chrome.contextMenus.create({
       id: "muteharam-pip", title: "Open in a small always-on-top window", contexts: ["action"],
     });
+    chrome.contextMenus.create({
+      id: "muteharam-live", title: "Clean the sound inside this page (live, about 3 s late)", contexts: ["action"],
+    });
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === "muteharam-pip" && tab) openInPlayer(tab, true);
+    if (info.menuItemId === "muteharam-live" && tab) startLive(tab);
   });
 } catch (e) { /* contextMenus not available: normal click still works */ }
 
 chrome.action.onClicked.addListener((tab) => openInPlayer(tab, false));
+
+// Live mode: the page's own sound is cleaned on this computer while it plays (see inpage.js).
+async function startLive(tab) {
+  try {
+    const r = await post("/live-info", {});
+    const info = await r.json();
+    if (!info.ok) throw new Error(info.error || "helper refused");
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true }, world: "MAIN",
+      func: (c) => { window.__mhCfg = c; }, args: [{ port: info.port, token: info.token }],
+    });
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id, allFrames: true }, world: "MAIN", files: ["inpage.js"],
+    });
+    badge(tab.id, "LIVE", "#2e7d32", "MuteHaram live cleaning: click the menu item again to turn off");
+  } catch (e) {
+    badge(tab.id, "ERR", "#c62828", "Live mode failed: " + e.message + " (is the helper running?)");
+  }
+}
 
 async function openInPlayer(tab, pip) {
   await stateReady;

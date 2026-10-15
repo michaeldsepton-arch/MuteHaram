@@ -19,6 +19,42 @@ LOG_DIR = os.path.join(config.PC_DIR, "logs")
 EXT_ORIGINS = ("chrome-extension://", "moz-extension://", "edge-extension://")
 
 
+LIVE_PORT = 47802
+_live_proc = None
+
+
+def live_port_open():
+    import socket
+    try:
+        with socket.create_connection(("127.0.0.1", LIVE_PORT), timeout=0.3):
+            return True
+    except OSError:
+        return False
+
+
+def ensure_live_server():
+    """Start the live cleaner (GPU) the first time it is needed; return True when it is listening."""
+    global _live_proc
+    if live_port_open():
+        return True
+    if _live_proc is None or _live_proc.poll() is not None:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        log = open(os.path.join(LOG_DIR, "live-server.log"), "w")
+        flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        cmd = [python_exe(), "-m", "muteharam_pc.live_server"]
+        if os.environ.get("MUTEHARAM_LIVE_BYPASS") == "1":
+            cmd += ["--bypass"]
+        _live_proc = subprocess.Popen(cmd, cwd=config.PC_DIR, stdout=log, stderr=subprocess.STDOUT,
+                                      creationflags=flags)
+    for _ in range(120):                      # loading the model takes a few seconds
+        if live_port_open():
+            return True
+        if _live_proc.poll() is not None:
+            return False
+        time.sleep(0.5)
+    return False
+
+
 def python_exe():
     try:
         p = json.load(open(config.CONFIG_PATH)).get("python")
@@ -83,6 +119,14 @@ class Handler(BaseHTTPRequestHandler):
                     for r in req.get("orphans") or []:
                         f.write("  " + str(r)[:230] + nl)
                 return self._json(200, {"ok": True, "file": path})
+            except Exception as ex:
+                return self._json(500, {"error": repr(ex)})
+        if self.path == "/live-info":
+            try:
+                from .stream_server import load_or_create_token
+                if not ensure_live_server():
+                    return self._json(500, {"error": "the live cleaner did not start (see pc/logs/live-server.log)"})
+                return self._json(200, {"ok": True, "port": LIVE_PORT, "token": load_or_create_token()})
             except Exception as ex:
                 return self._json(500, {"error": repr(ex)})
         if self.path != "/play":

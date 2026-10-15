@@ -126,3 +126,20 @@ Useful options: `--gain 0.3` (keep 30% of the music instead of removing all),
 * `muteharam_pc/play.py` – command-line player launcher; `helper.py` – local service for the extension
 * `muteharam_pc/tiger/` – model code from github.com/JusperLee/TIGER (MIT licence, included)
 * `extension/` – the browser extension
+
+## Live mode: clean the sound inside the page you are watching
+
+For sites the player cannot open (for example sites that scramble their video
+addresses), the extension can clean the page's own sound while it plays.
+
+1. Keep the helper running (`start_helper.bat`).
+2. On the video page, **right-click the MuteHaram toolbar icon** and choose
+   **"Clean the sound inside this page (live, about 3 s late)"**. The badge shows LIVE.
+   The first time, the helper starts the cleaner on your graphics card (a few seconds).
+3. The sound is cleaned about 3 seconds late, and the picture is held back by the same
+   amount so lips and voice still match. Seeking or skipping makes it restart.
+4. Click the menu item again to turn it off.
+
+Needs the graphics card (about real-time speed). If it fails, see `pc/logs/live-server.log`.
+Picture-in-picture windows show the original picture, not the delayed one.
+Test: `python tests/test_live_server.py`.
