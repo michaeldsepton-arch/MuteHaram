@@ -304,9 +304,11 @@
       dbg.blocks++;
       if (node) node.port.postMessage({ t: "block", gen: g, k, n, data }, [data.buffer]);
     };
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
       if (closed) return;
-      say("lost the connection to the MuteHaram live server; playing the original sound (retrying)", true);
+      say("lost the connection to the MuteHaram live server (code " + (ev && ev.code) + (ev && ev.reason ? ", " + ev.reason : "") +
+          (ev && ev.code === 4003 ? " - wrong token: remove and re-add the extension, then try again" : "") +
+          "); playing the original sound (retrying)", true);
       clearTimeout(retryTimer);
       retryTimer = setTimeout(connect, 2000);
     };

@@ -114,8 +114,14 @@ async def handle(ws, cleaner, token, log=print):
     sess = None
     gen = 0
     try:
+        log("live: a page connected, waiting for its hello")
         hello = json.loads(await asyncio.wait_for(ws.recv(), 15))
-        if hello.get("type") != "hello" or (token and not secrets.compare_digest(str(hello.get("token", "")), token)):
+        if hello.get("type") != "hello":
+            log(f"live: first message was not a hello: {str(hello)[:80]}")
+            await ws.close(4002, "no hello")
+            return
+        if token and not secrets.compare_digest(str(hello.get("token", "")), token):
+            log("live: refused, the page's token does not match pc/token.txt (reload the extension and try again)")
             await ws.close(4003, "bad token")
             return
         sess = LiveSession(cleaner, float(hello.get("window_ms", 3000)), float(hello.get("margin_ms", 500)))
