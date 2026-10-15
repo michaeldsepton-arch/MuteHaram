@@ -30,56 +30,80 @@ def clean_headers(headers):
 
 
 def fetch_head(url, headers, nbytes=4096, timeout=12):
-    """(status, content_type, first bytes) of a URL, fetched the way the player would. Never raises."""
+    """(status, content_type, first bytes, response headers) of a URL, fetched the way the player would.
+    Never raises."""
     import urllib.error
     import urllib.request
     req = urllib.request.Request(url, headers={**{"User-Agent": "Mozilla/5.0"}, **clean_headers(headers)})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.headers.get("Content-Type", ""), resp.read(nbytes)
+            return resp.status, resp.headers.get("Content-Type", ""), resp.read(nbytes), dict(resp.headers.items())
     except urllib.error.HTTPError as e:
         try:
             body = e.read(300)
         except Exception:
             body = b""
-        return e.code, (e.headers.get("Content-Type", "") if e.headers else ""), body
+        return e.code, (e.headers.get("Content-Type", "") if e.headers else ""), body, dict(e.headers.items() if e.headers else [])
     except Exception as e:
-        return None, "", str(e).encode()
+        return None, "", str(e).encode(), {}
 
 
 def classify(url, headers):
     """Look at what the server really returns for a stream address.
     -> dict(kind, note): kind is master / media / video / http_error / web_page / unreadable / other."""
+    import base64
+    import gzip
+    import re
     from urllib.parse import urljoin
-    status, ctype, data = fetch_head(url, headers)
+    status, ctype, data, rh = fetch_head(url, headers)
     if status is None:
         return dict(kind="unreadable", note="could not connect (" + data.decode("utf-8", "replace")[:80] + ")")
     if status >= 400:
         return dict(kind="http_error", note=f"the server answered {status}")
-    if data.lstrip().startswith(b"#EXTM3U"):
-        text = data.decode("utf-8", "replace")
+    body = data
+    extra = ""
+    if body[:2] == b"\x1f\x8b":                       # gzip-compressed body
+        try:
+            body = gzip.GzipFile(fileobj=__import__("io").BytesIO(body)).read(4096)
+            extra = " (the playlist arrives gzip-compressed)"
+        except Exception:
+            pass
+    stripped = body.lstrip(b"\xef\xbb\xbf \t\r\n")    # ignore a byte-order mark / blank lines
+    if stripped != body.lstrip() or body[:3] == b"\xef\xbb\xbf":
+        extra += " (it starts with an invisible marker, which strict readers reject)"
+    if not stripped.startswith(b"#EXTM3U") and re.fullmatch(rb"[A-Za-z0-9+/=\r\n]{16,}", stripped[:400] or b"-"):
+        try:
+            dec = base64.b64decode(stripped[: len(stripped) // 4 * 4])
+            if dec.lstrip().startswith(b"#EXTM3U"):
+                return dict(kind="other", note="the playlist is BASE64-ENCODED (hidden from ordinary players)")
+        except Exception:
+            pass
+    if stripped.startswith(b"#EXTM3U"):
+        text = stripped.decode("utf-8", "replace")
         if "#EXT-X-STREAM-INF" in text:
-            return dict(kind="master", note="main playlist")
+            return dict(kind="master", note="main playlist" + extra)
         # a playlist of video/audio pieces: check what the first piece looks like
         first = next((ln.strip() for ln in text.splitlines() if ln.strip() and not ln.startswith("#")), None)
-        note = "playlist"
+        note = "playlist" + extra
         if first:
-            st, ct, seg = fetch_head(urljoin(url, first), headers, nbytes=16)
+            st, ct, seg, _ = fetch_head(urljoin(url, first), headers, nbytes=16)
             if st is None or st >= 400:
                 note = f"playlist, but its first piece is not available ({'error ' + str(st) if st else 'no connection'})"
             elif seg[:1] == b"G" or seg[4:8] in (b"ftyp", b"styp", b"moof") or seg[:3] == b"ID3" or seg[:2] == b"\xff\xf1":
-                note = "playlist with normal pieces"
+                note = "playlist with normal pieces" + extra
             elif seg[:4] == b"\x89PNG" or seg[:2] == b"\xff\xd8" or seg[:3] == b"GIF":
                 note = ("playlist whose video pieces are DISGUISED AS PICTURES (the site hides its video "
                         "from ordinary players)")
             elif seg[:1] == b"<":
                 note = "playlist whose first piece is a web page, not video (blocked or login needed?)"
         return dict(kind="media", note=note)
-    if data[:1] == b"<":
+    if stripped[:1] == b"<":
         return dict(kind="web_page", note="the address returns a web page, not video")
-    if "video" in ctype.lower() or data[4:8] in (b"ftyp",) or data[:4] == b"\x1aE\xdf\xa3":
+    if "video" in ctype.lower() or body[4:8] in (b"ftyp",) or body[:4] == b"\x1aE\xdf\xa3":
         return dict(kind="video", note="video file")
-    return dict(kind="other", note=f"unrecognised content ({ctype or 'no type'})")
+    enc = rh.get("Content-Encoding") or rh.get("content-encoding") or "none"
+    return dict(kind="other", note=f"unrecognised content (type {ctype or 'none'}, encoding {enc}); "
+                                   f"it starts with {body[:48]!r}{extra}")
 
 
 def ui_error(message):
