@@ -93,12 +93,12 @@ The hook can delay the sound by a set amount and tell the player "my audio clock
 1. Install the newest `hook-debug.apk` (latest release), then **re-patch** YouTube with it (Part 3) so the app embeds the new version. Check logcat shows `FIRST CALL` lines when a video plays.
 2. With the phone plugged in, set the delay **before** starting a video:
    ```powershell
-   .\adb shell setprop debug.muteharam.delay_ms 1000
+   .\adb shell settings put global muteharam_delay_ms 1000
    ```
 3. Play a video of someone talking (a close-up works best). Watch the lips vs. the voice.
    - Works: voice matches lips, the video starts about 1 second late.
    - Doesn't work: the voice is about 1 second behind the lips.
-4. Control test: `.\adb shell setprop debug.muteharam.noclock 1`, restart the video. Now the voice SHOULD lag the lips. If it does, test 3 proves the trick.
-5. Turn everything off: `.\adb shell setprop debug.muteharam.delay_ms 0` and `.\adb shell setprop debug.muteharam.noclock 0`.
+4. Control test: `.\adb shell settings put global muteharam_noclock 1`, restart the video. Now the voice SHOULD lag the lips. If it does, test 3 proves the trick.
+5. Turn everything off: `.\adb shell settings put global muteharam_delay_ms 0` and `.\adb shell settings put global muteharam_noclock 0`.
 
 Changing the delay while a video is playing glitches. Set it, then (re)start the video.
