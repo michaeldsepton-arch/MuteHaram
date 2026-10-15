@@ -39,8 +39,11 @@ Check what a computer is missing without installing: `python setup_pc.py --check
 
 1. Start the helper: double-click **`start_helper.bat`** and leave it open.
    (Win+R → `shell:startup` and drop a shortcut there to start it automatically.)
-2. One-time browser setup (Chrome / Edge / Brave): open `chrome://extensions`, switch
-   on **Developer mode**, **Load unpacked**, choose the `pc\extension` folder.
+2. One-time browser setup.
+   Chrome / Edge / Brave: open `chrome://extensions`, switch on **Developer mode**, **Load unpacked**,
+   choose the `pc\extension` folder.
+   Firefox: open `about:debugging#/runtime/this-firefox`, **Load Temporary Add-on**, pick
+   `pc\extension\manifest.json` (must be redone after each Firefox restart).
 3. Open a video page. **Press play** (so the browser has seen the stream), then click the
    MuteHaram toolbar button. The page's own video pauses and the player opens.
    - YouTube: works right away.

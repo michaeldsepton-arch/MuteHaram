@@ -12,20 +12,25 @@ const YT_RE = /^https:\/\/((www|m|music)\.)?youtube\.com\/(watch|shorts|live)|^h
 
 const found = {}; // tabId -> [{url, headers, t}]
 
-chrome.webRequest.onSendHeaders.addListener(
-  (d) => {
-    if (d.tabId < 0 || !MEDIA_RE.test(d.url) || SKIP_RE.test(d.url)) return;
-    const headers = {};
-    for (const h of d.requestHeaders || []) {
-      if (KEEP_HEADERS.includes(h.name.toLowerCase())) headers[h.name] = h.value;
-    }
-    const list = (found[d.tabId] ||= []);
-    if (!list.some((x) => x.url === d.url)) list.push({ url: d.url, headers, t: Date.now() });
-    if (list.length > 40) list.shift();
-  },
-  { urls: ["<all_urls>"] },
-  ["requestHeaders", "extraHeaders"]
-);
+function onMediaRequest(d) {
+  if (d.tabId < 0 || !MEDIA_RE.test(d.url) || SKIP_RE.test(d.url)) return;
+  const headers = {};
+  for (const h of d.requestHeaders || []) {
+    if (KEEP_HEADERS.includes(h.name.toLowerCase())) headers[h.name] = h.value;
+  }
+  const list = (found[d.tabId] ||= []);
+  if (!list.some((x) => x.url === d.url)) list.push({ url: d.url, headers, t: Date.now() });
+  if (list.length > 40) list.shift();
+}
+
+try {
+  // Chrome/Edge: "extraHeaders" is needed to see Referer / Cookie
+  chrome.webRequest.onSendHeaders.addListener(onMediaRequest, { urls: ["<all_urls>"] },
+    ["requestHeaders", "extraHeaders"]);
+} catch (e) {
+  // Firefox: headers are visible without it
+  chrome.webRequest.onSendHeaders.addListener(onMediaRequest, { urls: ["<all_urls>"] }, ["requestHeaders"]);
+}
 
 chrome.tabs.onRemoved.addListener((id) => delete found[id]);
 chrome.tabs.onUpdated.addListener((id, info) => {

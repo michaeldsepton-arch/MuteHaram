@@ -3,8 +3,28 @@
   "name": "MuteHaram",
   "version": "0.1.0",
   "description": "Open the video on this page in the MuteHaram player with the music removed.",
-  "permissions": ["webRequest", "tabs", "scripting"],
-  "host_permissions": ["<all_urls>", "http://127.0.0.1:47800/*"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_title": "Remove music (open in MuteHaram player)" }
+  "permissions": [
+    "webRequest",
+    "tabs",
+    "scripting"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1:47800/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "action": {
+    "default_title": "Remove music (open in MuteHaram player)"
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "muteharam@local",
+      "strict_min_version": "121.0"
+    }
+  }
 }

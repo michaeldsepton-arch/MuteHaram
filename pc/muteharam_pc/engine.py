@@ -99,6 +99,7 @@ class Session:
         self.log(f"engine: {self.duration:.0f}s of audio, window {window_s:g}s / hop {hop_s:g}s on {self.device}, "
                  f"{'separate L/R' if self.stereo_sep else 'mono mix'} processing")
 
+        self._clean_stale_files()
         self._tmp = tempfile.NamedTemporaryFile(prefix="muteharam_", suffix=".pcm", delete=False)
         self._tmp.close()
         self.store = np.memmap(self._tmp.name, dtype=np.int16, mode="w+",
@@ -110,6 +111,17 @@ class Session:
         self._stop = False
         self.thread = threading.Thread(target=self._work, name="engine", daemon=True)
         self.thread.start()
+
+    @staticmethod
+    def _clean_stale_files():
+        """Remove cache files left behind by a run that was killed (older than an hour)."""
+        import glob
+        for p in glob.glob(os.path.join(tempfile.gettempdir(), "muteharam_*.pcm")):
+            try:
+                if time.time() - os.path.getmtime(p) > 3600:
+                    os.unlink(p)
+            except OSError:
+                pass
 
     # ---------------------------------------------------------------- public
     def wait_block(self, b, timeout=120.0):

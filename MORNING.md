@@ -37,7 +37,7 @@ you want to test (or only YouTube first).
 
 ## Things I could not decide for you
 
-* Which browser: the extension is Chrome/Edge/Brave. Firefox needs a small change.
+* Which browser: the extension loads in Chrome/Edge/Brave and (temporarily) Firefox; Firefox is untested.
 * Default AI window / delay trade-off (quality vs how long the picture waits at the start):
   PC player uses 10 s windows (no wait); Android defaults are 3 s windows ≈ 3.2 s wait on the PC route,
   2 s windows ≈ 2.5 s wait on-device. Change with `muteharam_chunk_ms`.
