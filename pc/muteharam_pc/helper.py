@@ -67,6 +67,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._origin_ok() or self.headers.get("X-MuteHaram") != "1":
             return self._json(403, {"error": "not from the MuteHaram extension"})
+        if self.path == "/debug":
+            # a report from the extension of what a page loaded (when no video stream was found)
+            try:
+                req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                os.makedirs(LOG_DIR, exist_ok=True)
+                path = os.path.join(LOG_DIR, time.strftime("extension-debug-%Y%m%d-%H%M%S.txt"))
+                nl = chr(10)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write("page: " + str(req.get("page")) + nl + nl)
+                    f.write("requests seen (newest last; images/scripts/styles left out):" + nl)
+                    for r in req.get("requests") or []:
+                        f.write("  " + str(r) + nl)
+                    f.write(nl + "requests from background workers (no tab):" + nl)
+                    for r in req.get("orphans") or []:
+                        f.write("  " + str(r)[:230] + nl)
+                return self._json(200, {"ok": True, "file": path})
+            except Exception as ex:
+                return self._json(500, {"error": repr(ex)})
         if self.path != "/play":
             return self._json(404, {"error": "unknown"})
         try:

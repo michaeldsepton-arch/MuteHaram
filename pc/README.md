@@ -51,6 +51,13 @@ Check what a computer is missing without installing: `python setup_pc.py --check
      address, so play the video for a few seconds first. The badge shows
      **OK** (opened), **?** (no stream seen yet) or **ERR** (helper not running).
 
+**Badge `?` (no video stream seen).** Press play first and let the video run a few seconds, then click again.
+The extension now also catches streams fetched by the page's background workers and streams with unusual
+file names, and it tries the page address with yt-dlp as a last resort. When it still finds nothing it saves
+`pc\logs\extension-debug-<time>.txt`: the page address and what the page loaded. Open that file to see what
+the site does (it may contain addresses with login tokens; delete those parts before sharing it).
+After updating, reload the extension on the browser's extensions page.
+
 **Settings (optional).** Copy `settings.example.json` to `settings.json` in the `pc` folder and edit it; every
 run (including the browser button) uses it. The useful ones:
 - `"gain": 1.4` removes the music harder (more music gone, a little more risk to voices); `1.0` is the default,
