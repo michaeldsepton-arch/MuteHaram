@@ -1,7 +1,6 @@
 package com.muteharam.hook
 
 import android.util.Log
-import com.muteharam.separation.ChunkModel
 import com.muteharam.separation.MusicEstimator
 import com.muteharam.separation.RemoteEstimator
 import com.muteharam.separation.SeparationPipeline
@@ -32,7 +31,7 @@ object SeparationHost {
     private val streams = ConcurrentHashMap<Int, Stream>()
     private val loggedErrors = HashSet<String>()
 
-    private fun chunkSamples(): Int = (HookSettings.chunkMs / 1000.0 * ChunkModel.SAMPLE_RATE).toInt()
+    private fun chunkSamples(): Int { HookSettings.refresh(); return HookSettings.chunkSamples }
 
     /** Fixed output delay (ms) for the current settings: what the player's clock must be shifted by. */
     fun latencyMs(): Int {
@@ -56,7 +55,8 @@ object SeparationHost {
                 if (port == null) { once("bad muteharam_server value: $hostPort"); return null }
                 return RemoteEstimator(host, port, HookSettings.token, chunkSamples())
             }
-            "local" -> return LocalEstimators.create(chunkSamples())
+            // the Engine app on this same device (see engine/): same protocol, loopback address
+            "local" -> return RemoteEstimator("127.0.0.1", 47801, "", chunkSamples())
         }
         return null
     }
@@ -134,19 +134,5 @@ object SeparationHost {
         Log.i(TAG, "separation stream $streamId: blocks ok=${p.blocksProcessed} failed=${p.blocksFailed} " +
             "skipped=${p.blocksSkipped} late-frames=${p.lateFrames} last-ai=${"%.0f".format(p.lastInferenceMs)}ms " +
             "max-ai=${"%.0f".format(p.maxInferenceMs)}ms err=${p.lastError ?: "-"}")
-    }
-}
-
-/** On-device model providers (LiteRT). Filled in by LiteRtLocal.kt when available. */
-object LocalEstimators {
-    @Volatile var factory: ((Int) -> MusicEstimator?)? = null
-
-    fun create(chunkSamples: Int): MusicEstimator? {
-        val f = factory
-        if (f == null) {
-            Log.w("MuteHaramHook", "local mode: on-device model not available in this build")
-            return null
-        }
-        return f(chunkSamples)
     }
 }

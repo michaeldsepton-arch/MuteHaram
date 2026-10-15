@@ -47,7 +47,9 @@ jobs:
           for T in 128 176 256; do
             python hook/research/retime/retime.py bench/src/main/assets/tiger_music_fp16.tflite               bench/src/main/assets/tiger_music_T$T.tflite --frames-old 1040 --frames-new $T
           done
-          ls -l bench/src/main/assets
+          mkdir -p engine/src/main/assets
+          cp bench/src/main/assets/tiger_music_T*.tflite engine/src/main/assets/
+          ls -l bench/src/main/assets engine/src/main/assets
 
       - name: Unit-test the separation pipeline (pure Kotlin)
         run: gradle :separation:test --no-daemon --stacktrace
@@ -67,6 +69,12 @@ jobs:
           name: muteharam-hook-debug-apk
           path: hook/build/outputs/apk/debug/hook-debug.apk
 
+      - name: Upload engine APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: muteharam-engine-debug-apk
+          path: engine/build/outputs/apk/debug/engine-debug.apk
+
       - name: Upload benchmark APK
         uses: actions/upload-artifact@v4
         with:
@@ -82,6 +90,7 @@ jobs:
             app/build/outputs/apk/debug/app-debug.apk
             hook/build/outputs/apk/debug/hook-debug.apk
             bench/build/outputs/apk/debug/bench-debug.apk
+            engine/build/outputs/apk/debug/engine-debug.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

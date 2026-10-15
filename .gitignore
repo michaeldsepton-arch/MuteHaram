@@ -17,3 +17,4 @@ pc/tools/
 __pycache__/
 *.pyc
 pc/logs/
+engine/src/main/assets/*.tflite

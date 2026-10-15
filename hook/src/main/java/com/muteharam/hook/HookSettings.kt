@@ -6,7 +6,8 @@ package com.muteharam.hook
  *   adb shell settings put global muteharam_mode  <test|remote|local>
  *       test   (default) -> the delay/sync experiment (muteharam_delay_ms ...)
  *       remote           -> music removal on a PC across Wi-Fi (pc/start_wifi_server.bat)
- *       local            -> music removal on this device's GPU
+ *       local            -> music removal on this device's GPU, via the "MuteHaram Engine"
+ *                           app (it listens on 127.0.0.1:47801; open it first)
  *   adb shell settings put global muteharam_server  192.168.1.20:47801   (remote)
  *   adb shell settings put global muteharam_token   abcd1234            (remote)
  *   adb shell settings put global muteharam_chunk_ms  3000     AI window length
@@ -36,13 +37,17 @@ object HookSettings {
         mode = if (m == "remote" || m == "local") m else "test"
         server = DebugProps.getString("server", "")
         token = DebugProps.getString("token", "")
-        chunkMs = DebugProps.getInt("chunk_ms", 3000).coerceIn(1000, 12000)
+        // the on-device engine is built for 2.03 s chunks; the PC can use longer ones
+        chunkMs = DebugProps.getInt("chunk_ms", if (mode == "local") 2032 else 3000).coerceIn(1000, 12000)
         marginMs = DebugProps.getInt("margin_ms", 500).coerceIn(100, 2000)
-        budgetMs = DebugProps.getInt("budget_ms", 700).coerceIn(100, 5000)
+        budgetMs = DebugProps.getInt("budget_ms", if (mode == "local") 1100 else 700).coerceIn(100, 5000)
         gainPercent = DebugProps.getInt("gain", 100).coerceIn(0, 100)
     }
 
     val separating: Boolean get() { refresh(); return mode != "test" }
+
+    /** AI window length in 44.1 kHz samples: a multiple of 512 (the model's hop). */
+    val chunkSamples: Int get() = maxOf(1, Math.round(chunkMs * 44.1 / 512.0).toInt()) * 512
 
     /** A string that changes whenever a setting that needs a new pipeline changes. */
     fun pipelineKey(): String { refresh(); return "$mode|$server|$token|$chunkMs|$marginMs|$budgetMs" }
