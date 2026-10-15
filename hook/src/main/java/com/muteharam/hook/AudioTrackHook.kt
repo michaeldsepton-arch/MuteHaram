@@ -74,6 +74,11 @@ class AudioTrackHook : IXposedHookLoadPackage {
             return
         }
 
+        // Apps that use AAudio instead of AudioTrack (e.g. WebView players)
+        // are handled by the native hook; failures there must not affect the
+        // Java hooks below.
+        NativeBridge.start()
+
         // No package filter on purpose: scoping is already done by
         // LSPosed's per-app scope (rooted) or by which APK was patched
         // (LSPatch/NPatch, rootless). A hard-coded list would silently
