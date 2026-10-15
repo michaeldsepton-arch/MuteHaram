@@ -145,7 +145,7 @@ class AudioTrackHook : IXposedHookLoadPackage {
     private fun shiftFrames(track: AudioTrack): Int {
         val p = HookConfig.processor
         if (!p.shiftClock) return 0
-        return (p.latencyMs.toLong() * track.sampleRate / 1000).toInt()
+        return (p.clockShiftMs.toLong() * track.sampleRate / 1000).toInt()
     }
 
     private fun hookShortArrayWrite(lpparam: XC_LoadPackage.LoadPackageParam) {

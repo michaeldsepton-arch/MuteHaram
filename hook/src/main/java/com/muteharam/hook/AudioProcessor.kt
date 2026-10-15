@@ -40,6 +40,13 @@ interface AudioProcessor {
     val shiftClock: Boolean get() = true
 
     /**
+     * How far to shift the reported audio clock. Defaults to [latencyMs];
+     * separate so it can be tuned independently of the real audio delay if a
+     * player doesn't respond 1:1 to the shift.
+     */
+    val clockShiftMs: Int get() = latencyMs
+
+    /**
      * @param pcm16 interleaved 16-bit PCM samples, modified in place.
      * @param offset start index into pcm16 for this buffer.
      * @param length number of shorts (not bytes) valid starting at offset.

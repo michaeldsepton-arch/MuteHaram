@@ -54,6 +54,8 @@ internal object DebugProps {
  *   adb shell settings put global muteharam_delay_ms 1000   (0 = off)
  *   adb shell settings put global muteharam_noclock 1       (1 = DON'T shift
  *       the clock, i.e. the "control" case where sound should visibly lag)
+ *   adb shell settings put global muteharam_shift_ms 750    (clock shift
+ *       independent of the delay; -1 = same as delay)
  * (the debug.muteharam.* system properties work too where readable)
  *
  * Set the delay BEFORE starting a video; changing it mid-playback causes a
@@ -62,6 +64,7 @@ internal object DebugProps {
 class DelayTestProcessor : AudioProcessor {
     @Volatile private var delayMs = 0
     @Volatile private var noClock = false
+    @Volatile private var shiftMs = -1
     @Volatile private var lastPollNs = 0L
 
     private var ring = ShortArray(0)
@@ -75,17 +78,28 @@ class DelayTestProcessor : AudioProcessor {
         lastPollNs = now
         val newDelay = DebugProps.getInt("delay_ms", 0).coerceIn(0, 5000)
         val newNoClock = DebugProps.getInt("noclock", 0) == 1
-        if (newDelay != delayMs || newNoClock != noClock) {
-            android.util.Log.i("MuteHaramHook", "test settings: delay_ms=$newDelay noclock=$newNoClock")
+        val newShift = DebugProps.getInt("shift_ms", -1)
+        if (newDelay != delayMs || newNoClock != noClock || newShift != shiftMs) {
+            android.util.Log.i(
+                "MuteHaramHook",
+                "test settings: delay_ms=$newDelay noclock=$newNoClock shift_ms=$newShift (-1 = same as delay)"
+            )
         }
         delayMs = newDelay
         noClock = newNoClock
+        shiftMs = newShift
     }
 
     override val latencyMs: Int
         get() {
             poll()
             return delayMs
+        }
+
+    override val clockShiftMs: Int
+        get() {
+            poll()
+            return if (shiftMs >= 0) shiftMs else delayMs
         }
 
     override val shiftClock: Boolean
