@@ -94,3 +94,48 @@ jobs:
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Real-model cross-check: the Kotlin pipeline against the real Python Wi-Fi server (CPU).
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the PC engine (CPU PyTorch + model weights)
+        working-directory: pc
+        run: python setup_pc.py --no-venv --cpu --skip-tools
+
+      - name: Python tests (server + protocol bytes)
+        working-directory: pc
+        run: |
+          python tests/test_protocol_golden.py
+          python tests/test_stream_server.py
+
+      - name: Start the Wi-Fi server
+        working-directory: pc
+        run: |
+          nohup python -m muteharam_pc.stream_server --no-token --cpu --port 47801 > server.log 2>&1 &
+          for i in $(seq 1 60); do (echo > /dev/tcp/127.0.0.1/47801) 2>/dev/null && break; sleep 2; done
+          cat server.log
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Kotlin pipeline vs the real server
+        env:
+          MUTEHARAM_SERVER: "127.0.0.1:47801"
+        run: gradle :separation:test --tests '*LiveServerTest*' --no-daemon --stacktrace
+
+      - name: Server log
+        if: always()
+        run: cat pc/server.log || true
