@@ -69,6 +69,8 @@ def main(argv=None):
     ap.add_argument("--hop", type=float, default=6.0, help="seconds produced per window")
     ap.add_argument("--gain", type=float, default=1.0, help="1.0 = remove all music, 0.5 = halve it")
     ap.add_argument("--cpu", action="store_true", help="do not use the GPU")
+    ap.add_argument("--channels", choices=["auto", "mono", "stereo"], default="auto",
+                    help="stereo = clean left and right separately (needs a GPU); mono = clean the mix once")
     ap.add_argument("--no-player", action="store_true", help="only serve the audio (prints its address)")
     ap.add_argument("--mpv-arg", action="append", default=[], help="extra argument for mpv (repeatable)")
     a = ap.parse_args(argv)
@@ -87,7 +89,8 @@ def main(argv=None):
     r = resolve(a.url, headers, cfg, log)
     src = MediaSource(r["media_url"], r["headers"], cfg["ffmpeg"], cfg["ffprobe"])
     session = Session(src, duration=r["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
-                      device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log)
+                      device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
+                      channels_mode=a.channels)
     srv = make_server(session)
     audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"
     log("cleaned audio at", audio_url)
