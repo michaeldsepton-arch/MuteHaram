@@ -35,9 +35,26 @@ def say(msg):
     print(f"\n==> {msg}", flush=True)
 
 
+def _curl():
+    return shutil.which("curl.exe") or shutil.which("curl")
+
+
 def download(url, dest, what=None):
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     tmp = dest + ".part"
+    try:
+        _download_py(url, dest, tmp, what)
+    except Exception as ex:
+        # Some Python installs cannot check website certificates; Windows' own curl can.
+        c = _curl()
+        if not c:
+            raise
+        print(f"   Python could not download this ({type(ex).__name__}); using curl instead", flush=True)
+        subprocess.run([c, "-L", "--fail", "-sS", "-A", "muteharam-setup", "-o", tmp, url], check=True)
+        os.replace(tmp, dest)
+
+
+def _download_py(url, dest, tmp, what=None):
     req = urllib.request.Request(url, headers={"User-Agent": "muteharam-setup"})
     with urllib.request.urlopen(req) as r, open(tmp, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0)
@@ -130,7 +147,15 @@ def setup_weights():
 def gh_latest(repo):
     req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases/latest",
                                  headers={"User-Agent": "muteharam-setup"})
-    return json.load(urllib.request.urlopen(req))
+    try:
+        return json.load(urllib.request.urlopen(req))
+    except Exception:
+        c = _curl()
+        if not c:
+            raise
+        out = subprocess.run([c, "-L", "--fail", "-sS", "-A", "muteharam-setup", req.full_url],
+                             capture_output=True, text=True, check=True).stdout
+        return json.loads(out)
 
 
 def setup_tools():
