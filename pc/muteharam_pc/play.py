@@ -128,6 +128,13 @@ def ui_error(message):
             pass
 
 
+AUDIO_ONLY_RE = re.compile(r"([?&]type=audio\b|/audio[/_.-]|[_-]audio[_.-]|audio[_-]only)", re.I)
+
+
+def looks_audio_only(url):
+    return bool(AUDIO_ONLY_RE.search(url))
+
+
 FORCE_DIRECT = set()      # addresses the extension saw being played: streams, whatever their name looks like
 
 
@@ -319,6 +326,13 @@ def run(argv=None):
         r["mpv_url"] = best_master
     elif a.audio_src and session is not None and r["mpv_url"] == a.audio_src:
         r["mpv_url"] = a.url             # never show an audio-only playlist as "the video"
+    if looks_audio_only(r["mpv_url"]):
+        # never show an audio-only playlist as "the video": prefer a main playlist, then a video one
+        pool = [u for u in order if not looks_audio_only(u)]
+        pick = next((u for u in pool if "type=" not in u), None) or (pool[0] if pool else None)
+        if pick:
+            log("the address picked for the picture looked audio-only; showing", pick[:100], "instead")
+            r["mpv_url"] = pick
     if session is not None:
         srv = make_server(session)
         audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"

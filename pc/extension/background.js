@@ -115,7 +115,9 @@ function candidateList(tabId) {
   const rank = (u) => (/\.m3u8/i.test(u) ? 3 : /\.mpd/i.test(u) ? 2 : 1);
   // main playlists first; audio-only / subtitle / single-quality lists last
   const looksMain = (u) =>
-    /(master|index\.m3u8|playlist\.m3u8|manifest)/i.test(u) ? 2 :
+    /([?&]type=audio\b)/i.test(u) ? 0 :
+    /([?&]type=video\b|[?&]rendition=)/i.test(u) ? 1 :
+    /(master|index\.m3u8|playlist\.m3u8|manifest|\/playlist\/)/i.test(u) ? 2 :
     /(\/audio\/|\/subs?\/|subtitle|_audio|chunk|segment|media_|-v\d|_\d+p)/i.test(u) ? 0 : 1;
   return [...list].sort((a, b) =>
     rank(b.url) - rank(a.url) || looksMain(b.url) - looksMain(a.url) || b.t - a.t);
