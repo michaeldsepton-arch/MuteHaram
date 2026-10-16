@@ -159,6 +159,17 @@ def resolve(url, headers, cfg, log, sub_langs="en.*,ar.*"):
     if out.returncode != 0:
         raise SystemExit("yt-dlp could not open that link:\n" + out.stderr[-800:])
     info = json.loads(out.stdout)
+    log(f"yt-dlp chose: site {info.get('extractor_key')}, format {info.get('format_id')} "
+        f"(audio codec {info.get('acodec')}, video codec {info.get('vcodec')}, protocol {info.get('protocol')})")
+    if info.get("acodec") == "none":
+        # the chosen format has a picture but no sound: ask for one that has sound
+        out2 = subprocess.run([cfg["yt_dlp"], "-J", "--no-playlist", "-f", "ba*[acodec!=none]/b*[acodec!=none]/ba*", url],
+                              capture_output=True, text=True, timeout=180)
+        if out2.returncode == 0:
+            info2 = json.loads(out2.stdout)
+            if info2.get("url") and info2.get("acodec") != "none":
+                info = info2
+                log(f"no sound in that one, using format {info.get('format_id')} ({info.get('acodec')}) instead")
     return dict(
         media_url=info["url"], headers=info.get("http_headers", {}), duration=info.get("duration"),
         mpv_url=url,
