@@ -125,8 +125,13 @@ def make_handler(engine, token):
                         sock.sendall(struct.pack("<II", seq, n) + y.astype("<f4").tobytes())
                         served += 1
                         if served % 10 == 1:
+                            rin = float(np.sqrt(np.mean(x * x)) + 1e-9)
+                            rmu = float(np.sqrt(np.mean(y * y)) + 1e-9)
+                            rres = float(np.sqrt(np.mean((x - y) ** 2)) + 1e-9)
                             print(f"{peer}: window {served} ({n/44100:.1f}s of audio) took "
-                                  f"{(time.time()-t0)*1000:.0f} ms", flush=True)
+                                  f"{(time.time()-t0)*1000:.0f} ms | sound in {20*np.log10(rin):.0f} dB, "
+                                  f"music found {20*np.log10(rmu):.0f} dB, left after removal {20*np.log10(rres):.0f} dB",
+                                  flush=True)
                     except Exception as ex:
                         print(f"{peer}: processing failed: {ex!r}", flush=True)
                         sock.sendall(struct.pack("<II", seq, ERROR_N))
