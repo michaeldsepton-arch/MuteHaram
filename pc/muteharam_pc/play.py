@@ -128,8 +128,11 @@ def ui_error(message):
             pass
 
 
+FORCE_DIRECT = set()      # addresses the extension saw being played: streams, whatever their name looks like
+
+
 def is_direct(url):
-    return os.path.exists(url) or bool(DIRECT.search(url))
+    return url in FORCE_DIRECT or os.path.exists(url) or bool(DIRECT.search(url))
 
 
 def mpv_list_value(v):
@@ -213,6 +216,8 @@ def run(argv=None):
     ap.add_argument("--gain", type=float, default=S["gain"], help="1.0 = remove fully, 0.5 = halve it, 1.3 = push harder")
     ap.add_argument("--mode", choices=["music", "speech"], default=S["mode"],
                     help='"music" removes the music; "speech" keeps only voices (also drops sound effects)')
+    ap.add_argument("--direct", action="store_true",
+                    help="the addresses given are video streams (not web pages), whatever they look like")
     ap.add_argument("--pip", action="store_true", default=bool(S["pip"]),
                     help="start in a small always-on-top corner window (press P in the player to toggle)")
     ap.add_argument("--sub-langs", default=S["sub_langs"],
@@ -231,6 +236,8 @@ def run(argv=None):
     ap.add_argument("--no-player", action="store_true", help="only serve the audio (prints its address)")
     ap.add_argument("--mpv-arg", action="append", default=[], help="extra argument for mpv (repeatable)")
     a = ap.parse_args(argv)
+    if a.direct:
+        FORCE_DIRECT.update([a.url, a.audio_src, *a.alt])
     log = lambda *m: print(*m, flush=True)
 
     cfg = config.load()

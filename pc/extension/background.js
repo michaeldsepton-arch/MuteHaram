@@ -238,7 +238,7 @@ async function openInPlayer(tab, pip) {
       // The player shows the picture from the main playlist but the music is removed from THIS audio.
       const audioNow = (found[tab.id] || []).filter((x) => /(\/audio[\/_-]|[_-]audio|audio[_-])/i.test(x.url))
         .sort((x, y) => y.t - x.t)[0];
-      payload = { url: c.url, alts, audio: audioNow ? audioNow.url : undefined, headers: c.headers, referer: c.headers.Referer || tab.url, start, page: tab.url,
+      payload = { url: c.url, direct: true, alts, audio: audioNow ? audioNow.url : undefined, headers: c.headers, referer: c.headers.Referer || tab.url, start, page: tab.url,
                   title: tab.title, pip, subs: subsFound[tab.id] || [] };
     } else {
       // No stream address seen. Save a report of what the page loaded (so it can be examined)

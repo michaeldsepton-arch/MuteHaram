@@ -152,6 +152,8 @@ class Handler(BaseHTTPRequestHandler):
                     cmd += ["--sub", str(sub)]
             if req.get("pip"):
                 cmd += ["--pip"]
+            if req.get("direct"):
+                cmd += ["--direct"]
             if req.get("referer"):
                 cmd += ["--referer", str(req["referer"])]
             for k, v in (req.get("headers") or {}).items():
