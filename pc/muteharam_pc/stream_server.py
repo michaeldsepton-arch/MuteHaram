@@ -113,6 +113,7 @@ def make_handler(engine, token):
                     return
                 print(f"{peer}: connected", flush=True)
                 served = 0
+                dump = []
                 while True:
                     seq, n = struct.unpack("<II", read_exact(sock, 8))
                     if n == 0 or n > MAX_SAMPLES:
@@ -124,6 +125,16 @@ def make_handler(engine, token):
                         y = engine.music(x)
                         sock.sendall(struct.pack("<II", seq, n) + y.astype("<f4").tobytes())
                         served += 1
+                        if served <= 12:      # keep the first windows so problems can be examined afterwards
+                            dump.append((x.copy(), y.copy()))
+                            if served == 12:
+                                try:
+                                    os.makedirs(os.path.join(config.PC_DIR, "logs"), exist_ok=True)
+                                    np.savez(os.path.join(config.PC_DIR, "logs", "wifi-dump.npz"),
+                                             x=np.stack([d[0] for d in dump]), y=np.stack([d[1] for d in dump]))
+                                    print(f"{peer}: saved the first 12 windows to pc/logs/wifi-dump.npz", flush=True)
+                                except Exception as ex:
+                                    print(f"could not save the dump: {ex!r}", flush=True)
                         if served % 10 == 1:
                             rin = float(np.sqrt(np.mean(x * x)) + 1e-9)
                             rmu = float(np.sqrt(np.mean(y * y)) + 1e-9)
