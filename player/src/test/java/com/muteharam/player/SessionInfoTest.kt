@@ -27,6 +27,13 @@ class SessionInfoTest {
         assertEquals("progressive", s.kind)
         assertTrue(s.headers.isEmpty() && s.subs.isEmpty())
         assertEquals(0.0, s.startSeconds, 0.0)
+        assertEquals("music", s.mode)
+    }
+
+    @Test
+    fun modeIsReadAndDefaultsToMusic() {
+        assertEquals("speech", SessionInfo.parse("""{"id": 1, "video": "https://v/a.mp4", "mode": "speech"}""").mode)
+        assertEquals("music", SessionInfo.parse("""{"id": 1, "video": "https://v/a.mp4", "mode": "nonsense"}""").mode)
     }
 
     @Test

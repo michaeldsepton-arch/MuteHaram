@@ -49,6 +49,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
     private lateinit var status: TextView
     private var player: ExoPlayer? = null
+    private lateinit var modeButton: TextView
+    private var current: SessionInfo? = null
+    private var curHost = ""
+    private var curToken = ""
 
     @Volatile
     private var currentId = -1L
@@ -100,6 +104,21 @@ class MainActivity : AppCompatActivity() {
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP or Gravity.END
+            )
+        )
+        modeButton = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            setBackgroundColor(0x66000000)
+            textSize = 15f
+            setPadding(28, 16, 28, 16)
+            visibility = View.GONE
+            setOnClickListener { switchMode() }
+        }
+        root.addView(
+            modeButton,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
             )
         )
         setContentView(root)
@@ -228,7 +247,38 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------------ playing
 
+    private fun showMode(mode: String) {
+        modeButton.text = if (mode == "speech") "Sound: SPEECH ONLY  (tap: remove music instead)"
+        else "Sound: MUSIC REMOVED  (tap: speech only instead)"
+        modeButton.visibility = View.VISIBLE
+    }
+
+    /** Ask the PC to clean in the other mode, then play again from the same spot. */
+    private fun switchMode() {
+        val s = current ?: return
+        val want = if (s.mode == "music") "speech" else "music"
+        setStatus("Switching to " + (if (want == "speech") "speech only" else "music removal") + " ...")
+        val host = curHost
+        val token = curToken
+        Thread {
+            try {
+                httpGet("http://" + host + ":47804/mode?m=" + want + "&t=" + URLEncoder.encode(token, "UTF-8"))
+                ui.post {
+                    val pos = (player?.currentPosition ?: 0L) / 1000.0
+                    play(s.copy(mode = want, startSeconds = pos), host, token)
+                }
+            } catch (e: Exception) {
+                setStatus("Could not switch the sound: " + (e.message ?: e.javaClass.simpleName))
+                ui.postDelayed({ setStatus(null) }, 4000)
+            }
+        }.start()
+    }
+
     private fun play(s: SessionInfo, host: String, token: String, withSubs: Boolean = true) {
+        current = s
+        curHost = host
+        curToken = token
+        showMode(s.mode)
         setStatus(("Starting " + s.title).trim())
         player?.release()
 

@@ -29,7 +29,7 @@ def wav_header(frames):
 
 def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
     """token: if set, every request must carry it (?t=... or header X-MuteHaram-Token).
-    routes: {"/session.json": callable -> dict} extra JSON documents (used by the tablet mode)."""
+    routes: {"/session.json": callable(query) -> dict} extra JSON documents / actions (tablet mode, mode switch)."""
     total = HEADER_LEN + session.total_frames * BYTES_PER_FRAME
     header = wav_header(session.total_frames)
 
@@ -81,7 +81,7 @@ def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
                 self.send_error(401)
                 return
             if routes and path in routes:
-                body = json.dumps(routes[path]()).encode()
+                body = json.dumps(routes[path](parse_qs(urlparse(self.path).query))).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))

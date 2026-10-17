@@ -412,3 +412,50 @@ class Session:
         removal = est if self.mode == "music" else xc - est
         y = xc - self.gain * removal
         return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+
+class SessionHub:
+    """What the audio server serves. Holds ONE cleaning Session at a time and can swap it for the other mode
+    ("music" = remove the music, "speech" = keep only voices) while the player keeps its connection: the file
+    has the same length either way, the player just asks for the sound again from where it is."""
+
+    def __init__(self, session, remake):
+        self.cur = session
+        self.remake = remake                 # remake(mode) -> a new Session on the same source
+        self.lock = threading.Lock()
+        self.total_frames = session.total_frames
+        self.duration = session.duration
+        self.log = session.log
+
+    @property
+    def mode(self):
+        return self.cur.mode
+
+    def read_frames(self, f0, f1):
+        cur = self.cur
+        try:
+            return cur.read_frames(f0, f1)
+        except Exception:
+            if cur is not self.cur:           # swapped while we were reading: ask the new one
+                return self.cur.read_frames(f0, f1)
+            raise
+
+    def switch(self, mode):
+        """Start cleaning in `mode`. Returns the mode now active (unchanged on failure)."""
+        with self.lock:
+            if mode == self.cur.mode:
+                return self.cur.mode
+            try:
+                new = self.remake(mode)
+            except Exception as ex:
+                self.log(f"could not switch to {mode}: {ex!r}")
+                return self.cur.mode
+            old, self.cur = self.cur, new
+            self.log(f"cleaning mode is now: {mode}")
+            # let requests that are still reading from the old session finish before it is closed
+            threading.Timer(15.0, old.close).start()
+            return mode
+
+    def close(self):
+        self.cur.close()
+

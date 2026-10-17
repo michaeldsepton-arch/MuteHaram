@@ -36,7 +36,17 @@ def load_music_model(models_dir=None, device=None):
     return _load("music", models_dir, device)
 
 
+_NET_CACHE = {}
+
+
 def _load(kind, models_dir=None, device=None):
+    key = (kind, str(models_dir), str(device))
+    if key not in _NET_CACHE:
+        _NET_CACHE[key] = _load_uncached(kind, models_dir, device)
+    return _NET_CACHE[key]
+
+
+def _load_uncached(kind, models_dir=None, device=None):
     models_dir = models_dir or DEFAULT_MODELS_DIR
     cfg_path = os.path.join(models_dir, "config.json")
     weights = os.path.join(models_dir, "model.safetensors")

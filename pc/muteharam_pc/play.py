@@ -12,12 +12,14 @@ import json
 import os
 import re
 import subprocess
+import threading
 import sys
 import time
 
 from . import config
 from .engine import MediaSource, Session
 from .server import make_server
+from .engine import SessionHub
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DIRECT = re.compile(r"\.(m3u8|mpd|mp4|m4v|webm|mkv|mov|ts|mp3|m4a|flac|ogg|opus)(\?|#|$)", re.I)
@@ -220,9 +222,19 @@ def tablet_kind(url, note_kind):
     return "progressive"
 
 
+def mode_route(hub):
+    """/mode?m=music|speech : switch the cleaning (runs in the background; answers at once)."""
+    def route(q):
+        want = (q.get("m") or [""])[0]
+        if want in ("music", "speech"):
+            hub.switch(want)               # quick: the networks are already loaded
+        return {"mode": hub.mode}
+    return route
+
+
 def stop_other_tablet_sessions(log):
     """A new "send to the tablet" replaces the old one: stop any older tablet session still running."""
-    if os.name != "nt":
+    if os.name != "nt" or os.environ.get("MUTEHARAM_KEEP_OTHER_SESSIONS") == "1":   # (the variable is for tests)
         return
     me = os.getpid()
     ps = ("Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne %d -and $_.CommandLine -match 'muteharam_pc.play' "
@@ -265,12 +277,13 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log):
         else:
             log(f"skipping a caption file that does not load ({st}): {u[:100]}")
     subs = good
+    hub = SessionHub(session, session.remake)
     doc = {"id": int(time.time() * 1000), "title": title or "", "video": video, "kind": kind,
            "headers": clean_headers(vheaders),
            "subs": subs, "start": max(0.0, a.start), "duration": session.duration}
     stop_other_tablet_sessions(log)
-    srv = make_server(session, host="0.0.0.0", port=a.tablet_port, token=token,
-                      routes={"/session.json": lambda: doc})
+    srv = make_server(hub, host="0.0.0.0", port=a.tablet_port, token=token,
+                      routes={"/session.json": lambda q: dict(doc, mode=hub.mode), "/mode": mode_route(hub)})
     log(f"tablet session ready: {kind} picture, cleaned audio on port {a.tablet_port}")
     log("In the MuteHaram tablet app use one of these addresses:", ", ".join(lan_addresses()) or "(this computer's address)")
     log("Waiting for the tablet. (This window closes after 30 minutes without the tablet asking.)")
@@ -280,7 +293,7 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log):
     except KeyboardInterrupt:
         pass
     finally:
-        session.close()
+        hub.close()
 
 
 def main(argv=None):
@@ -372,6 +385,10 @@ def run(argv=None):
         except Exception:
             sess.close()
             raise
+        # switching mode later: the same source, the other network
+        sess.remake = lambda m: Session(src, duration=sess.duration, window_s=a.window, hop_s=a.hop,
+                                        music_gain=a.gain, device="cpu" if a.cpu else None,
+                                        models_dir=cfg["models_dir"], log=log, channels_mode=a.channels, mode=m)
         return sess
 
     # Look at every candidate address and try the most promising first: a main ("master") playlist
@@ -433,8 +450,11 @@ def run(argv=None):
     if a.tablet:
         return run_tablet(a, cfg, r, notes, session, problem, headers, log)
     if session is not None:
-        srv = make_server(session)
+        hub = SessionHub(session, session.remake)
+        session = hub                      # closing later closes whichever session is current
+        srv = make_server(hub, routes={"/mode": mode_route(hub)})
         audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"
+        mode_port = srv.server_address[1]
         log("cleaned audio at", audio_url)
     if a.no_player:
         if problem:
@@ -447,7 +467,10 @@ def run(argv=None):
 
     cmd = [cfg["mpv"], r["mpv_url"]]
     if problem is None:
-        cmd += [f"--audio-file={audio_url}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}"]
+        cmd += [f"--audio-file={audio_url}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}",
+                f"--script={os.path.join(HERE, 'mpv_mode.lua')}",
+                f"--script-opts-append=muteharam-mode-port={mode_port}",
+                f"--script-opts-append=muteharam-mode={hub.mode}"]
     else:
         # The AI engine could not start (no GPU driver? model missing?): still play the video.
         why = " ".join(str(problem).split())[:160]

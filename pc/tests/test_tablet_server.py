@@ -39,7 +39,7 @@ def get(url, headers=None):
 def main():
     doc = {"id": 1, "video": "https://example.com/v.m3u8", "kind": "hls"}
     s = srv.make_server(FakeSession(), host="127.0.0.1", port=0, token="tok",
-                        routes={"/session.json": lambda: doc})
+                        routes={"/session.json": lambda q: doc})
     base = f"http://127.0.0.1:{s.server_address[1]}"
     assert get(base + "/session.json")[0] == 401
     assert get(base + "/audio.wav?t=wrong")[0] == 401

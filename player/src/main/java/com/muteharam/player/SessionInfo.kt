@@ -11,6 +11,7 @@ data class SessionInfo(
     val headers: Map<String, String>,
     val subs: List<Pair<String, String>>, // url to language
     val startSeconds: Double,
+    val mode: String = "music",         // "music" = remove the music, "speech" = speech only
 ) {
     companion object {
         fun parse(json: String): SessionInfo {
@@ -33,6 +34,7 @@ data class SessionInfo(
                 headers = headers,
                 subs = subs,
                 startSeconds = o.optDouble("start", 0.0).let { if (it.isNaN() || it < 0) 0.0 else it },
+                mode = if (o.optString("mode") == "speech") "speech" else "music",
             )
         }
 
