@@ -270,7 +270,16 @@ class MainActivity : AppCompatActivity() {
         p.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 currentId = -1L        // the next poll offers the same session again; tapping the message retries
-                setStatus("Playback problem: " + error.errorCodeName + "\n" + (error.message ?: "") + "\n(tap here to try again)")
+                var why = ""
+                var c: Throwable? = error.cause
+                var depth = 0
+                while (c != null && depth < 4) {
+                    why += "\n  caused by " + c.javaClass.simpleName + ": " + (c.message ?: "")
+                    c = c.cause
+                    depth++
+                }
+                android.util.Log.e("MuteHaramPlayer", "playback error", error)
+                setStatus("Playback problem: " + error.errorCodeName + "\n" + (error.message ?: "") + why + "\n(tap here to try again)")
             }
 
             override fun onTracksChanged(tracks: Tracks) {
