@@ -33,6 +33,7 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.SingleSampleMediaSource
 import androidx.media3.ui.PlayerView
 import java.io.IOException
 import java.net.HttpURLConnection
@@ -241,17 +242,22 @@ class MainActivity : AppCompatActivity() {
             ?.let { http.setUserAgent(it.value) }
         val dataFactory = DefaultDataSource.Factory(this, http)
 
-        val subs = s.subs.mapIndexed { i, pair ->
-            MediaItem.SubtitleConfiguration.Builder(Uri.parse(pair.first))
+        val itemBuilder = MediaItem.Builder().setUri(s.video)
+        if (s.kind == "hls") itemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
+        if (s.kind == "dash") itemBuilder.setMimeType(MimeTypes.APPLICATION_MPD)
+        val video = DefaultMediaSourceFactory(dataFactory).createMediaSource(itemBuilder.build())
+
+        // Captions are optional: a caption file that fails to load must never stop the film.
+        val captionSources = s.subs.mapIndexed { i, pair ->
+            val cfg = MediaItem.SubtitleConfiguration.Builder(Uri.parse(pair.first))
                 .setMimeType(SessionInfo.subtitleMime(pair.first))
                 .setLanguage(if (pair.second.isEmpty()) null else pair.second)
                 .setSelectionFlags(if (i == 0) C.SELECTION_FLAG_DEFAULT else 0)
                 .build()
+            SingleSampleMediaSource.Factory(dataFactory)
+                .setTreatLoadErrorsAsEndOfStream(true)
+                .createMediaSource(cfg, C.TIME_UNSET)
         }
-        val itemBuilder = MediaItem.Builder().setUri(s.video).setSubtitleConfigurations(subs)
-        if (s.kind == "hls") itemBuilder.setMimeType(MimeTypes.APPLICATION_M3U8)
-        if (s.kind == "dash") itemBuilder.setMimeType(MimeTypes.APPLICATION_MPD)
-        val video = DefaultMediaSourceFactory(dataFactory).createMediaSource(itemBuilder.build())
 
         val audioUrl = "http://" + host + ":47804/audio.wav?t=" + URLEncoder.encode(token, "UTF-8")
         val audio = ProgressiveMediaSource.Factory(DefaultHttpDataSource.Factory())
@@ -276,7 +282,7 @@ class MainActivity : AppCompatActivity() {
                 else if (state == Player.STATE_BUFFERING) setStatus("Loading ...")
             }
         })
-        p.setMediaSource(MergingMediaSource(video, audio), (s.startSeconds * 1000).toLong())
+        p.setMediaSource(MergingMediaSource(video, audio, *captionSources.toTypedArray()), (s.startSeconds * 1000).toLong())
         p.prepare()
         p.playWhenReady = true
         playerView.player = p

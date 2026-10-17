@@ -235,6 +235,20 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log):
         video, vheaders, subs, title = resolve_video(a.url, cfg, log, a.sub_langs)
         subs += [{"url": u, "lang": ""} for u in a.sub]
         kind = tablet_kind(video, None)
+    # only real caption files: the seek-bar preview pictures (thumbnails.vtt) and anything that does not load are dropped
+    good = []
+    for sub in subs:
+        u = sub["url"]
+        if "thumbnail" in u.lower() or "sprite" in u.lower():
+            continue
+        st, ct, data, _ = fetch_head(u, vheaders, nbytes=64)
+        text = data.lstrip(bytes([0xEF, 0xBB, 0xBF, 32, 13, 10]))
+        is_caption = text[:6] == b"WEBVTT" or u.lower().split("?")[0].endswith((".srt", ".ass", ".ssa", ".ttml"))
+        if st is not None and st < 400 and is_caption:
+            good.append(sub)
+        else:
+            log(f"skipping a caption file that does not load ({st}): {u[:100]}")
+    subs = good
     doc = {"id": int(time.time() * 1000), "title": title or "", "video": video, "kind": kind,
            "headers": clean_headers(vheaders),
            "subs": subs, "start": max(0.0, a.start), "duration": session.duration}
