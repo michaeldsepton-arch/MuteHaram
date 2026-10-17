@@ -180,3 +180,18 @@ The choice is remembered. (Live in-page mode still uses the setting in `settings
 * **Tablet:** tap the mode button at the top left of the picture. The picture and sound restart from the same spot.
 
 The mode chosen in the extension's menu is just the starting mode.
+
+### The better film model: "Bandit v2"
+
+The standard cleaning model (TIGER-DnR) misses the score of some films (it files it under "sound effects").
+**Bandit v2** is a model built for film audio (speech / music / effects) and finds much more of that music.
+It is a third choice everywhere the cleaning mode can be chosen:
+
+1. **Remove the MUSIC (standard, fastest)**: TIGER-DnR.
+2. **Remove the MUSIC with the BETTER film model**: Bandit v2. Same speed class on a GTX 1070 (faster than real time).
+3. **SPEECH ONLY**: keeps just the voices.
+
+`python setup_pc.py` downloads its weights (about 450 MB, Zenodo, CC BY-SA 4.0) into `pc\modelsandit-v2\`; skip with
+`--no-bandit`. Without them the player falls back to the standard music removal. In mpv press **C** to cycle through
+the three; on the tablet tap the mode button. Test: `python tests/test_bandit.py`.
+

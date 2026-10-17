@@ -255,8 +255,11 @@ class MainActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ playing
 
     private fun showMode(mode: String) {
-        modeButton.text = if (mode == "speech") "Sound: SPEECH ONLY  (tap: remove music instead)"
-        else "Sound: MUSIC REMOVED  (tap: speech only instead)"
+        modeButton.text = when (mode) {
+            "speech" -> "Sound: SPEECH ONLY  (tap: next mode)"
+            "bandit" -> "Sound: MUSIC REMOVED, better model  (tap: next mode)"
+            else -> "Sound: MUSIC REMOVED, standard  (tap: next mode)"
+        }
         refreshOverlay()
     }
 
@@ -270,13 +273,18 @@ class MainActivity : AppCompatActivity() {
     /** Ask the PC to clean in the other mode, then play again from the same spot. */
     private fun switchMode() {
         val s = current ?: return
-        val want = if (s.mode == "music") "speech" else "music"
-        setStatus("Switching to " + (if (want == "speech") "speech only" else "music removal") + " ...")
+        val want = when (s.mode) { "music" -> "bandit"; "bandit" -> "speech"; else -> "music" }
+        setStatus("Switching to " + (when (want) { "speech" -> "speech only"; "bandit" -> "the better music removal"; else -> "standard music removal" }) + " ...")
         val host = curHost
         val token = curToken
         Thread {
             try {
-                httpGet("http://" + host + ":47804/mode?m=" + want + "&t=" + URLEncoder.encode(token, "UTF-8"))
+                val answer = httpGet("http://" + host + ":47804/mode?m=" + want + "&t=" + URLEncoder.encode(token, "UTF-8"))
+                if (org.json.JSONObject(answer).optString("mode") != want) {
+                    setStatus("The PC could not switch to that mode (is the better model installed there? run setup_pc.py)")
+                    ui.postDelayed({ setStatus(null) }, 5000)
+                    return@Thread
+                }
                 ui.post {
                     val pos = (player?.currentPosition ?: 0L) / 1000.0
                     play(s.copy(mode = want, startSeconds = pos), host, token)

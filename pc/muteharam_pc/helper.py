@@ -153,7 +153,7 @@ class Handler(BaseHTTPRequestHandler):
                     cmd += ["--sub", str(sub)]
             if req.get("pip"):
                 cmd += ["--pip"]
-            if req.get("mode") in ("music", "speech"):
+            if req.get("mode") in ("music", "bandit", "speech"):
                 cmd += ["--mode", req["mode"]]
             if req.get("direct"):
                 cmd += ["--direct"]

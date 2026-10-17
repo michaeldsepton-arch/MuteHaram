@@ -20,3 +20,6 @@ pc/logs/
 engine/src/main/assets/*.tflite
 pc/mpv_config/scripts/uosc/
 pc/mpv_config/fonts/
+
+experiments/
+samples/

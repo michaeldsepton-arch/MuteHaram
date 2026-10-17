@@ -226,7 +226,7 @@ def mode_route(hub):
     """/mode?m=music|speech : switch the cleaning (runs in the background; answers at once)."""
     def route(q):
         want = (q.get("m") or [""])[0]
-        if want in ("music", "speech"):
+        if want in ("music", "bandit", "speech"):
             hub.switch(want)               # quick: the networks are already loaded
         return {"mode": hub.mode}
     return route
@@ -326,8 +326,9 @@ def run(argv=None):
     ap.add_argument("--window", type=float, default=S["window"], help="AI window, seconds (more = better, slower)")
     ap.add_argument("--hop", type=float, default=S["hop"], help="seconds produced per window")
     ap.add_argument("--gain", type=float, default=S["gain"], help="1.0 = remove fully, 0.5 = halve it, 1.3 = push harder")
-    ap.add_argument("--mode", choices=["music", "speech"], default=None,
-                    help='"music" removes the music; "speech" keeps only voices (also drops sound effects)')
+    ap.add_argument("--mode", choices=["music", "bandit", "speech"], default=None,
+                    help='"music" removes the music; "bandit" removes the music with the better film model (Bandit v2); '
+                         '"speech" keeps only voices (also drops sound effects)')
     ap.add_argument("--direct", action="store_true",
                     help="the addresses given are video streams (not web pages), whatever they look like")
     ap.add_argument("--pip", action="store_true", default=bool(S["pip"]),
@@ -354,8 +355,13 @@ def run(argv=None):
     if a.direct:
         FORCE_DIRECT.update([a.url, a.audio_src, *a.alt])
     if a.mode is None:        # not chosen in the extension: settings.json decides
-        a.mode = S["tablet_mode"] if (a.tablet and S.get("tablet_mode") in ("music", "speech")) else S["mode"]
+        a.mode = S["tablet_mode"] if (a.tablet and S.get("tablet_mode") in ("music", "bandit", "speech")) else S["mode"]
     log = lambda *m: print(*m, flush=True)
+    if a.mode == "bandit":
+        from .bandit_model import is_available
+        if not is_available():
+            log("Bandit v2 is not installed (run setup_pc.py): using the standard music removal instead")
+            a.mode = "music"
 
     cfg = config.load()
     headers = {}

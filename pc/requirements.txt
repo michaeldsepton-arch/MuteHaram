@@ -17,3 +17,4 @@ torch>=2.3
 numpy>=1.26
 safetensors>=0.4
 websockets>=12
+scipy>=1.10

@@ -142,8 +142,10 @@ class Session:
     def __init__(self, source, duration=None, window_s=10.0, hop_s=6.0, lookahead_s=150.0,
                  music_gain=1.0, device=None, models_dir=None, log=print,
                  channels_mode="auto", patience_s=15.0, mode="music"):
+        assert mode in ("music", "speech", "bandit")
+        if mode == "bandit":
+            window_s, hop_s = 8.0, 4.0       # what this model was built for
         assert window_s > hop_s > 0
-        assert mode in ("music", "speech")
         self.src = source
         self.log = log
         self.gain = music_gain
@@ -158,8 +160,13 @@ class Session:
         self.lookahead_blocks = max(2, int(lookahead_s / hop_s))
 
         # "music": subtract the estimated music; "speech": keep only the estimated dialogue
-        self.net, self.device, self.target = load_network("music" if mode == "music" else "dialog",
-                                                          models_dir, device)
+        if mode == "bandit":
+            from .bandit_model import load_bandit
+            self.net, self.device = load_bandit(None, device)
+            self.target = None
+        else:
+            self.net, self.device, self.target = load_network("music" if mode == "music" else "dialog",
+                                                              models_dir, device)
         # "stereo": run the network on left and right separately (better stereo, 2x work);
         # "mono": run it once on the mix. auto = stereo when a GPU is available.
         self.stereo_sep = channels_mode == "stereo" or (channels_mode == "auto" and self.device.type == "cuda")
@@ -401,6 +408,11 @@ class Session:
     def _clean(self, x):
         """x: [win, 2] float32 -> cleaned centre [hop, 2] int16."""
         c = slice(self.margin, self.margin + self.hop)
+        if self.mode == "bandit":
+            from .bandit_model import separate
+            music = separate(self.net, self.device, x, ("music",))["music"][c]
+            y = x[c] - self.gain * music
+            return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
         if self.stereo_sep:
             t = torch.from_numpy(np.ascontiguousarray(x.T)).to(self.device)[:, None, :]   # [2,1,win]
             est = self.net(t)[:, self.target, :].float().cpu().numpy().T[c]               # [hop,2]
