@@ -161,3 +161,14 @@ picture directly and the cleaned sound from this PC over Wi-Fi (only the sound c
    "Send to the tablet"**. The tablet starts playing (after a few seconds). Pause, skip and captions
    are on the tablet. The PC window can stay minimised. A new "Send to the tablet" replaces the old one.
 5. The PC must stay on and connected while you watch. If Windows asks about the firewall, allow private networks.
+
+## Choosing what to remove: music, or everything except speech
+
+Right-click the MuteHaram toolbar icon: two radio choices set the cleaning for the PC player and for
+"Send to the tablet":
+
+* **Remove the MUSIC** (default): keeps voices and sound effects. Best when the AI recognises the music.
+* **SPEECH ONLY**: keeps just the voices; music AND sound effects are removed. Use it when "remove the music" leaves
+  film-score music audible (some orchestral scores are treated as effects by the AI).
+
+The choice is remembered. (Live in-page mode still uses the setting in `settings.json`.)

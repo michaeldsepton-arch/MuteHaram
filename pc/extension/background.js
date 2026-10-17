@@ -169,6 +169,13 @@ async function post(path, body) {
 // Right-click the toolbar icon -> "small window" opens the player as a corner picture-in-picture.
 try {
   chrome.runtime.onInstalled.addListener(() => {
+    chrome.storage.local.get("mode").then((v) => {
+      const cur = v.mode === "speech" ? "speech" : "music";
+      chrome.contextMenus.create({ id: "muteharam-mode-music", type: "radio", checked: cur === "music",
+        title: "Cleaning: remove the MUSIC (keeps voices and sound effects)", contexts: ["action"] });
+      chrome.contextMenus.create({ id: "muteharam-mode-speech", type: "radio", checked: cur === "speech",
+        title: "Cleaning: SPEECH ONLY (removes music and effects)", contexts: ["action"] });
+    });
     chrome.contextMenus.create({
       id: "muteharam-pip", title: "Open in a small always-on-top window", contexts: ["action"],
     });
@@ -180,6 +187,8 @@ try {
     });
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId === "muteharam-mode-music") chrome.storage.local.set({ mode: "music" });
+    if (info.menuItemId === "muteharam-mode-speech") chrome.storage.local.set({ mode: "speech" });
     if (info.menuItemId === "muteharam-pip" && tab) openInPlayer(tab, true);
     if (info.menuItemId === "muteharam-live" && tab) startLive(tab);
     if (info.menuItemId === "muteharam-tablet" && tab) openInPlayer(tab, false, true);
@@ -260,6 +269,7 @@ async function openInPlayer(tab, pip, tablet) {
   }
   try {
     if (tablet) payload.tablet = true;
+    payload.mode = (await chrome.storage.local.get("mode")).mode === "speech" ? "speech" : "music";
     const r = await post("/play", payload);
     if (!r.ok) throw new Error("helper said " + r.status);
     pausePage(tab.id);

@@ -313,7 +313,7 @@ def run(argv=None):
     ap.add_argument("--window", type=float, default=S["window"], help="AI window, seconds (more = better, slower)")
     ap.add_argument("--hop", type=float, default=S["hop"], help="seconds produced per window")
     ap.add_argument("--gain", type=float, default=S["gain"], help="1.0 = remove fully, 0.5 = halve it, 1.3 = push harder")
-    ap.add_argument("--mode", choices=["music", "speech"], default=S["mode"],
+    ap.add_argument("--mode", choices=["music", "speech"], default=None,
                     help='"music" removes the music; "speech" keeps only voices (also drops sound effects)')
     ap.add_argument("--direct", action="store_true",
                     help="the addresses given are video streams (not web pages), whatever they look like")
@@ -340,8 +340,8 @@ def run(argv=None):
     a = ap.parse_args(argv)
     if a.direct:
         FORCE_DIRECT.update([a.url, a.audio_src, *a.alt])
-    if a.tablet and S.get("tablet_mode") in ("music", "speech"):
-        a.mode = S["tablet_mode"]
+    if a.mode is None:        # not chosen in the extension: settings.json decides
+        a.mode = S["tablet_mode"] if (a.tablet and S.get("tablet_mode") in ("music", "speech")) else S["mode"]
     log = lambda *m: print(*m, flush=True)
 
     cfg = config.load()
