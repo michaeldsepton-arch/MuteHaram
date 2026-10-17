@@ -40,6 +40,7 @@ DEFAULT_SETTINGS = {
     "gain": 1.0,              # 1.0 = remove fully, 0.5 = halve it, 1.3 = push a little harder
     "window": 10.0,           # AI window in seconds (bigger = better, slower)
     "hop": 6.0,
+    "tablet_mode": "",        # "" = same as "mode"; "speech" = keep only voices for the tablet (drops music AND effects)
     "channels": "auto",       # auto | mono | stereo
     "sub_langs": "en.*,ar.*", # YouTube caption languages to load (yt-dlp style, "all" for everything)
     "pip": False,             # always start in the small corner window

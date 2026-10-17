@@ -340,6 +340,8 @@ def run(argv=None):
     a = ap.parse_args(argv)
     if a.direct:
         FORCE_DIRECT.update([a.url, a.audio_src, *a.alt])
+    if a.tablet and S.get("tablet_mode") in ("music", "speech"):
+        a.mode = S["tablet_mode"]
     log = lambda *m: print(*m, flush=True)
 
     cfg = config.load()
