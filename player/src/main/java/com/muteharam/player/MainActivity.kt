@@ -50,6 +50,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private var player: ExoPlayer? = null
     private lateinit var modeButton: TextView
+    private lateinit var gearButton: TextView
+    private var controlsVisible = true
     private var current: SessionInfo? = null
     private var curHost = ""
     private var curToken = ""
@@ -91,7 +93,7 @@ class MainActivity : AppCompatActivity() {
             )
         )
 
-        val gear = TextView(this).apply {
+        val gear = TextView(this).also { gearButton = it }.apply {
             text = "⚙ Settings"
             setTextColor(Color.WHITE)
             setBackgroundColor(0x66000000)
@@ -122,6 +124,11 @@ class MainActivity : AppCompatActivity() {
             )
         )
         setContentView(root)
+        // Settings and the sound-mode button appear together with the player's controls (tap the picture) and fade with them.
+        playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
+            controlsVisible = v == View.VISIBLE
+            refreshOverlay()
+        })
 
         WindowCompat.setDecorFitsSystemWindows(window, false)
         WindowInsetsControllerCompat(window, root).apply {
@@ -250,7 +257,14 @@ class MainActivity : AppCompatActivity() {
     private fun showMode(mode: String) {
         modeButton.text = if (mode == "speech") "Sound: SPEECH ONLY  (tap: remove music instead)"
         else "Sound: MUSIC REMOVED  (tap: speech only instead)"
-        modeButton.visibility = View.VISIBLE
+        refreshOverlay()
+    }
+
+    /** The two buttons are visible with the controls, or whenever nothing is playing yet. */
+    private fun refreshOverlay() {
+        val show = controlsVisible || player == null
+        gearButton.visibility = if (show) View.VISIBLE else View.GONE
+        modeButton.visibility = if (show && current != null) View.VISIBLE else View.GONE
     }
 
     /** Ask the PC to clean in the other mode, then play again from the same spot. */
@@ -355,6 +369,8 @@ class MainActivity : AppCompatActivity() {
         p.playWhenReady = true
         playerView.player = p
         player = p
+        controlsVisible = false
+        refreshOverlay()
     }
 
     /** The picture's own sound (with the music) is switched off: the PC's cleaned audio plays instead. */
