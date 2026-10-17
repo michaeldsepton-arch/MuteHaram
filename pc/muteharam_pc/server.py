@@ -122,6 +122,9 @@ def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
 
     class Server(ThreadingHTTPServer):
         daemon_threads = True
+        # On Windows SO_REUSEADDR lets several programs share one port (and then the OLDEST one answers),
+        # so a second server on a busy port must fail loudly instead.
+        allow_reuse_address = False
 
         def handle_error(self, request, client_address):
             # the player closing its connection (seek, exit) is normal, not an error worth a traceback

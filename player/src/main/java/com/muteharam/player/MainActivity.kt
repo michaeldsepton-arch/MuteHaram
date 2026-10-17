@@ -288,7 +288,15 @@ class MainActivity : AppCompatActivity() {
             }
 
             override fun onPlaybackStateChanged(state: Int) {
-                if (state == Player.STATE_READY) setStatus(null)
+                if (state == Player.STATE_READY) {
+                    // say which sound is playing for a few seconds, so it is obvious if the PC's audio is not used
+                    val audioGroups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
+                    val cleaned = audioGroups.any { g ->
+                        g.isSelected && (0 until g.length).any { g.getTrackFormat(it).sampleMimeType == MimeTypes.AUDIO_RAW }
+                    }
+                    setStatus(if (cleaned) "Sound: cleaned by the PC" else "Sound: ORIGINAL (the PC's cleaned sound is not playing)")
+                    ui.postDelayed({ if (player === p) setStatus(null) }, 4000)
+                }
                 else if (state == Player.STATE_BUFFERING) setStatus("Loading ...")
             }
         })

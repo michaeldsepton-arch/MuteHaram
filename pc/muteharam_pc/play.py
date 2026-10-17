@@ -220,6 +220,22 @@ def tablet_kind(url, note_kind):
     return "progressive"
 
 
+def stop_other_tablet_sessions(log):
+    """A new "send to the tablet" replaces the old one: stop any older tablet session still running."""
+    if os.name != "nt":
+        return
+    me = os.getpid()
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne %d -and $_.CommandLine -match 'muteharam_pc.play' "
+          "-and $_.CommandLine -match '--tablet' -and $_.CommandLine -notmatch 'Get-CimInstance' } | "
+          "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" % me)
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, timeout=30,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+        time.sleep(1.0)
+    except Exception as ex:
+        log("could not stop the older tablet session:", ex)
+
+
 def run_tablet(a, cfg, r, notes, session, problem, headers, log):
     """Offer the picture address + the cleaned audio to the tablet app (instead of opening mpv)."""
     import socket as _socket
@@ -252,6 +268,7 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log):
     doc = {"id": int(time.time() * 1000), "title": title or "", "video": video, "kind": kind,
            "headers": clean_headers(vheaders),
            "subs": subs, "start": max(0.0, a.start), "duration": session.duration}
+    stop_other_tablet_sessions(log)
     srv = make_server(session, host="0.0.0.0", port=a.tablet_port, token=token,
                       routes={"/session.json": lambda: doc})
     log(f"tablet session ready: {kind} picture, cleaned audio on port {a.tablet_port}")
