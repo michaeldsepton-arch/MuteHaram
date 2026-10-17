@@ -14,6 +14,8 @@ package com.muteharam.hook
  *   adb shell settings put global muteharam_margin_ms 500      context each side of a block
  *   adb shell settings put global muteharam_budget_ms 700      time allowed for the AI per block
  *   adb shell settings put global muteharam_gain 100           % of the music to remove (0 = none)
+ *   adb shell settings put global muteharam_stereo 1           remote: clean left and right separately
+ *                                                              (1 = yes, default; 0 = old mono mix)
  *
  * Read about once a second; the audio threads only look at cached values.
  */
@@ -27,6 +29,7 @@ object HookSettings {
     @Volatile var marginMs: Int = 500; private set
     @Volatile var budgetMs: Int = 700; private set
     @Volatile var gainPercent: Int = 100; private set
+    @Volatile var stereo: Boolean = true; private set
 
     /** Cheap to call from anywhere; re-reads the settings at most once a second. */
     fun refresh() {
@@ -40,7 +43,9 @@ object HookSettings {
         // the on-device engine is built for 2.03 s chunks; the PC can use longer ones
         chunkMs = DebugProps.getInt("chunk_ms", if (mode == "local") 2032 else 3000).coerceIn(1000, 12000)
         marginMs = DebugProps.getInt("margin_ms", 500).coerceIn(100, 2000)
-        budgetMs = DebugProps.getInt("budget_ms", if (mode == "local") 1100 else 700).coerceIn(100, 5000)
+        stereo = mode == "remote" && DebugProps.getInt("stereo", 1) != 0
+        // stereo asks the PC to clean two channels per window: a little more time is needed
+        budgetMs = DebugProps.getInt("budget_ms", if (mode == "local") 1100 else if (stereo) 1400 else 700).coerceIn(100, 5000)
         gainPercent = DebugProps.getInt("gain", 100).coerceIn(0, 100)
     }
 
@@ -50,5 +55,5 @@ object HookSettings {
     val chunkSamples: Int get() = maxOf(1, Math.round(chunkMs * 44.1 / 512.0).toInt()) * 512
 
     /** A string that changes whenever a setting that needs a new pipeline changes. */
-    fun pipelineKey(): String { refresh(); return "$mode|$server|$token|$chunkMs|$marginMs|$budgetMs" }
+    fun pipelineKey(): String { refresh(); return "$mode|$server|$token|$chunkMs|$marginMs|$budgetMs|$stereo" }
 }

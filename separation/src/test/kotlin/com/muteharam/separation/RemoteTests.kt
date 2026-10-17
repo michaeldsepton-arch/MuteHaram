@@ -16,7 +16,8 @@ import kotlin.math.sin
 import org.junit.Test
 
 /** A tiny stand-in for stream_server.py: replies with `gain * input` as the "music". */
-class FakeServer(private val token: String, private val gain: Float, private val maxWindows: Int = Int.MAX_VALUE) {
+class FakeServer(private val token: String, private val gain: Float, private val maxWindows: Int = Int.MAX_VALUE,
+                 private val gainRight: Float = gain) {
     private val server = ServerSocket(0)
     val port: Int get() = server.localPort
     @Volatile var windows = 0
@@ -40,9 +41,27 @@ class FakeServer(private val token: String, private val gain: Float, private val
             val tl = ins.readUnsignedByte()
             val tk = ByteArray(tl); ins.readFully(tk)
             val ok = String(tk) == token
-            s.getOutputStream().write(RemoteProtocol.MAGIC + byteArrayOf(if (ok) 0 else 1))
+            val v2 = magic.contentEquals(RemoteProtocol.MAGIC2)
+            s.getOutputStream().write((if (v2) RemoteProtocol.MAGIC2 else RemoteProtocol.MAGIC) + byteArrayOf(if (ok) 0 else 1))
             if (!ok) { s.close(); return }
             while (true) {
+                if (v2) {
+                    val h2 = ByteArray(12); ins.readFully(h2)
+                    val b2 = ByteBuffer.wrap(h2).order(ByteOrder.LITTLE_ENDIAN)
+                    val seq2 = b2.int; val n2 = b2.int; val ch2 = b2.int
+                    val raw = ByteArray(n2 * ch2 * 2); ins.readFully(raw)
+                    if (windows >= maxWindows) { s.close(); return }
+                    windows++
+                    val inp = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+                    val out2 = ByteBuffer.allocate(12 + n2 * ch2 * 2).order(ByteOrder.LITTLE_ENDIAN)
+                    out2.putInt(seq2).putInt(n2).putInt(ch2)
+                    for (c in 0 until ch2) {
+                        val g = if (c == 0) gain else gainRight
+                        for (i in 0 until n2) out2.putShort(Math.round(inp.get(c * n2 + i) / 32768f * g * 32767f).toShort())
+                    }
+                    s.getOutputStream().write(out2.array())
+                    continue
+                }
                 val h = ByteArray(8); ins.readFully(h)
                 val hb = ByteBuffer.wrap(h).order(ByteOrder.LITTLE_ENDIAN)
                 val seq = hb.int; val n = hb.int
@@ -75,6 +94,59 @@ class RemoteTests {
         val req = RemoteProtocol.encodeRequest(1, floatArrayOf(1.0f, -2.0f))
         assertArrayEquals(
             byteArrayOf(1, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0x80.toByte(), 0x3f, 0, 0, 0, 0xc0.toByte()), req)
+    }
+
+    @Test
+    fun version2FramingMatchesTheGoldenBytes() {
+        // The same bytes are asserted in pc/tests/test_protocol_golden.py
+        val hello = RemoteProtocol.encodeHello("ab", RemoteProtocol.MAGIC2)
+        assertArrayEquals(byteArrayOf(0x4d, 0x48, 0x52, 0x32, 2, 0x61, 0x62), hello)
+        // two channels of two samples: L = [1, -2], R = [3, -4] (as int16 values, i.e. divided by 32768)
+        val l = floatArrayOf(1f / 32768f, -2f / 32768f)
+        val r = floatArrayOf(3f / 32768f, -4f / 32768f)
+        val req = RemoteProtocol.encodeRequestV2(1, listOf(l, r))
+        assertArrayEquals(
+            byteArrayOf(1, 0, 0, 0, 2, 0, 0, 0, 2, 0, 0, 0, 1, 0, 0xfe.toByte(), 0xff.toByte(), 3, 0, 0xfc.toByte(), 0xff.toByte()), req)
+    }
+
+    @Test
+    fun stereoPipelineCleansEachChannelOnItsOwn() {
+        val rate = 48000
+        // left: the "music" is half the sound; right: a quarter of it. A channel mix-up would show.
+        val srv = FakeServer("t", 0.5f, gainRight = 0.25f)
+        try {
+            val chunk = 47 * 512
+            val est = RemoteEstimator("127.0.0.1", srv.port, "t", chunk, stereo = true)
+            assertTrue(est.stereoCapable)
+            val p = SeparationPipeline(rate, 2, est, marginSeconds = 0.1, inferenceBudgetMs = 200,
+                slackMs = 50, startWorker = false)
+            assertTrue(p.isStereo)
+            val total = rate * 3
+            val input = FloatArray(total * 2) { i ->
+                val n = i / 2
+                if (i % 2 == 0) sin(2 * PI * 330 * n / rate).toFloat() * 0.5f
+                else sin(2 * PI * 550 * n / rate).toFloat() * 0.4f
+            }
+            val out = input.copyOf()
+            var n = 0
+            while (n < total) {
+                val len = minOf(total - n, 777)
+                p.process(out, n * 2, len)
+                p.pump()
+                n += len
+            }
+            assertEquals("blocks failed: ${p.lastError}", 0L, p.blocksFailed)
+            val L = p.latencyFrames
+            var worstL = 0.0
+            var worstR = 0.0
+            for (i in L + 2000 until total) {
+                worstL = maxOf(worstL, abs(out[i * 2] - input[(i - L) * 2] * 0.5f).toDouble())
+                worstR = maxOf(worstR, abs(out[i * 2 + 1] - input[(i - L) * 2 + 1] * 0.75f).toDouble())
+            }
+            assertTrue("left channel off by $worstL", worstL < 2e-3)
+            assertTrue("right channel off by $worstR", worstR < 2e-3)
+            p.close()
+        } finally { srv.close() }
     }
 
     @Test

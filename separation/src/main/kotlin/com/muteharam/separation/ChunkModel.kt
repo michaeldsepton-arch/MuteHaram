@@ -38,6 +38,13 @@ interface MusicEstimator {
     val chunkSamples: Int
     fun estimate(chunk: FloatArray): FloatArray
     fun close() {}
+
+    /** True if [estimateStereo] works: left and right are cleaned as two separate signals. */
+    val stereoCapable: Boolean get() = false
+
+    /** Music estimate for the left and right window (each exactly [chunkSamples] long). */
+    fun estimateStereo(left: FloatArray, right: FloatArray): Array<FloatArray> =
+        throw UnsupportedOperationException("stereo is not supported by this estimator")
 }
 
 /** Runs a fixed-shape on-device [ChunkModel]: reflect pad -> model -> inverse STFT. */

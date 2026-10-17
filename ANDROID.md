@@ -34,6 +34,11 @@ app erases its data/logins, as before. `test` mode behaves exactly like the prev
    ```
 3. Start a video. In `adb logcat -s MuteHaramHook` you should see
    `separation stream ...: remote ... latency 3xxx ms` and, every 5 s, `blocks ok=N failed=0`.
+   The log line now says `stereo` (left and right are cleaned separately, like the PC player does) or
+   `mono mix` (an older PC server, or `muteharam_stereo 0`). Stereo needs the **new PC server**
+   (update `pc\muteharam_pc\stream_server.py`) AND a hook built after that change (re-patch). The default
+   `budget_ms` for stereo is 1400 (about 4 s total delay), because the PC cleans two channels per window.
+   If the music is still audible, check that the PC window prints `(2 ch, ...)` lines.
 4. If the PC is off or the Wi-Fi drops, the video keeps playing with the ORIGINAL audio (music
    included) until it reconnects. Nothing freezes.
 

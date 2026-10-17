@@ -15,6 +15,38 @@ import org.junit.Test
 class LiveServerTest {
 
     @Test
+    fun stereoPipelineAgainstTheRealPythonServer() {
+        val hp = System.getenv("MUTEHARAM_SERVER")
+        if (hp.isNullOrBlank()) return
+        val host = hp.substringBeforeLast(':')
+        val port = hp.substringAfterLast(':').toInt()
+        val rate = 48000
+        val chunk = 88 * 512
+        val est = RemoteEstimator(host, port, "", chunk, readTimeoutMs = 120_000, stereo = true)
+        val p = SeparationPipeline(rate, 2, est, marginSeconds = 0.2, inferenceBudgetMs = 100,
+            slackMs = 50, startWorker = false)
+        assertTrue(p.isStereo)
+        val total = rate * 5
+        val input = FloatArray(total * 2) { i ->
+            val n = i / 2
+            val f = if (i % 2 == 0) 1318.0 else 1760.0
+            (0.25 * sin(2 * PI * 220 * n / rate) + 0.2 * sin(2 * PI * f * n / rate)).toFloat()
+        }
+        val out = input.copyOf()
+        var n = 0
+        while (n < total) {
+            val len = minOf(total - n, 960)
+            p.process(out, n * 2, len)
+            p.pump()
+            n += len
+        }
+        assertEquals("blocks failed: ${p.lastError}", 0L, p.blocksFailed)
+        assertTrue("blocks processed: ${p.blocksProcessed}", p.blocksProcessed >= 3)
+        for (v in out) assertTrue(v.isFinite() && abs(v) < 4f)
+        p.close()
+    }
+
+    @Test
     fun pipelineAgainstTheRealPythonServer() {
         val hp = System.getenv("MUTEHARAM_SERVER")
         if (hp.isNullOrBlank()) return

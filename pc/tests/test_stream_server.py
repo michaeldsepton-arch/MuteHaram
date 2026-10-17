@@ -23,9 +23,9 @@ PORT = 47999
 TOKEN = "t0k3n"
 
 
-def connect(token):
+def connect(token, magic_out=None):
     s = socket.create_connection(("127.0.0.1", PORT), timeout=30)
-    s.sendall(ss.MAGIC + bytes([len(token)]) + token.encode())
+    s.sendall((magic_out or ss.MAGIC) + bytes([len(token)]) + token.encode())
     magic = ss.read_exact(s, 4)
     status = ss.read_exact(s, 1)[0]
     return s, magic, status
@@ -66,6 +66,39 @@ def main():
     s.sendall(struct.pack("<II", 9, 0))
     rseq, rn = struct.unpack("<II", ss.read_exact(s, 8))
     assert rseq == 9 and rn == ss.ERROR_N
+    s.close()
+
+    # ---- version 2: stereo, int16
+    s, magic, status = connect("nope", ss.MAGIC2)
+    assert magic == ss.MAGIC2 and status == 1
+    s.close()
+    s, magic, status = connect(TOKEN, ss.MAGIC2)
+    assert magic == ss.MAGIC2 and status == 0
+    n2 = 44100 * 3
+    t2 = np.arange(n2) / 44100
+    left = (0.1 * np.sin(2 * np.pi * 440 * t2) + 0.05 * rng.standard_normal(n2)).astype("float32")
+    right = (0.08 * np.sin(2 * np.pi * 660 * t2) + 0.05 * rng.standard_normal(n2)).astype("float32")
+    pcm = np.stack([left, right])
+    q = np.round(np.clip(pcm, -1, 1) * 32767).astype("<i2")
+    for seq in (3, 4):
+        t0 = time.time()
+        s.sendall(struct.pack("<III", seq, n2, 2) + q.tobytes())
+        rseq, rn, rch = struct.unpack("<III", ss.read_exact(s, 12))
+        assert (rseq, rn, rch) == (seq, n2, 2), (rseq, rn, rch)
+        est = np.frombuffer(ss.read_exact(s, rn * rch * 2), dtype="<i2").reshape(rch, rn)
+        print(f"v2 seq {seq}: stereo {n2/44100:.0f} s window round trip {(time.time()-t0)*1000:.0f} ms")
+    ref2 = np.stack([engine.music(q[0].astype("float32") / 32768.0), engine.music(q[1].astype("float32") / 32768.0)])
+    err2 = float(np.max(np.abs(est.astype("float32") / 32767.0 - ref2)))
+    print("v2: max difference from running each channel through the model directly:", err2)
+    assert err2 < 5e-3, err2
+    # bad channel count -> error marker, connection stays usable
+    s.sendall(struct.pack("<III", 5, 100, 3) + bytes(100 * 3 * 2))
+    rseq, rn, rch = struct.unpack("<III", ss.read_exact(s, 12))
+    assert rseq == 5 and rn == ss.ERROR_N
+    s.sendall(struct.pack("<III", 6, n2, 1) + q[0].tobytes())
+    rseq, rn, rch = struct.unpack("<III", ss.read_exact(s, 12))
+    assert (rseq, rn, rch) == (6, n2, 1)
+    ss.read_exact(s, rn * 2)
     s.close()
     srv.shutdown()
     print("STREAM SERVER TEST OK")

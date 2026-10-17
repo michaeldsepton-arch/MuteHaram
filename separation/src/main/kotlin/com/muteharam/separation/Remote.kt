@@ -16,13 +16,32 @@ import java.nio.ByteOrder
  */
 object RemoteProtocol {
     val MAGIC = byteArrayOf('M'.code.toByte(), 'H'.code.toByte(), 'R'.code.toByte(), '1'.code.toByte())
+    val MAGIC2 = byteArrayOf('M'.code.toByte(), 'H'.code.toByte(), 'R'.code.toByte(), '2'.code.toByte())
     const val ERROR_N = -1   // 0xFFFFFFFF as a signed int
 
-    fun encodeHello(token: String): ByteArray {
+    fun encodeHello(token: String, magic: ByteArray = MAGIC): ByteArray {
         val t = token.toByteArray(Charsets.UTF_8)
         require(t.size < 256)
-        return MAGIC + byteArrayOf(t.size.toByte()) + t
+        return magic + byteArrayOf(t.size.toByte()) + t
     }
+
+    /** Version 2 request: [channels] are equally long float signals in -1..1, sent as planar int16. */
+    fun encodeRequestV2(seq: Int, channels: List<FloatArray>): ByteArray {
+        val n = channels[0].size
+        val b = ByteBuffer.allocate(12 + channels.size * n * 2).order(ByteOrder.LITTLE_ENDIAN)
+        b.putInt(seq).putInt(n).putInt(channels.size)
+        for (c in channels) {
+            require(c.size == n)
+            for (v in c) {
+                val q = Math.round(v * 32768f)
+                b.putShort((if (q > 32767) 32767 else if (q < -32768) -32768 else q).toShort())
+            }
+        }
+        return b.array()
+    }
+
+    /** int16 sample of a version 2 reply back to float (the server scales by 32767). */
+    fun fromInt16(v: Short): Float = v / 32767f
 
     fun encodeRequest(seq: Int, samples: FloatArray): ByteArray {
         val b = ByteBuffer.allocate(8 + samples.size * 4).order(ByteOrder.LITTLE_ENDIAN)
@@ -45,7 +64,11 @@ class RemoteEstimator(
     private val connectTimeoutMs: Int = 2000,
     private val readTimeoutMs: Int = 8000,
     private val retryAfterMs: Long = 1500,
+    /** Use protocol version 2 (left and right cleaned separately, 16-bit): needs a recent PC server. */
+    private val stereo: Boolean = false,
 ) : MusicEstimator {
+    override val stereoCapable: Boolean get() = stereo
+
     private var sock: Socket? = null
     private var input: DataInputStream? = null
     private var seq = 0
@@ -80,6 +103,36 @@ class RemoteEstimator(
         }
     }
 
+    @Synchronized
+    override fun estimateStereo(left: FloatArray, right: FloatArray): Array<FloatArray> {
+        require(stereo) { "estimator was created without stereo" }
+        require(left.size == chunkSamples && right.size == chunkSamples)
+        try {
+            ensureConnected()
+            val s = sock!!
+            val id = seq++
+            s.getOutputStream().apply { write(RemoteProtocol.encodeRequestV2(id, listOf(left, right))); flush() }
+            val head = ByteArray(12)
+            input!!.readFully(head)
+            val hb = ByteBuffer.wrap(head).order(ByteOrder.LITTLE_ENDIAN)
+            val rseq = hb.int
+            val n = hb.int
+            val ch = hb.int
+            if (n == RemoteProtocol.ERROR_N) throw IOException("server could not process the window")
+            if (rseq != id || n != chunkSamples || ch != 2) throw IOException("unexpected reply (seq $rseq, n $n, ch $ch)")
+            val body = ByteArray(n * ch * 2)
+            input!!.readFully(body)
+            val sb = ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
+            val out = Array(2) { FloatArray(n) }
+            for (c in 0 until 2) for (i in 0 until n) out[c][i] = RemoteProtocol.fromInt16(sb.get())
+            return out
+        } catch (e: IOException) {
+            disconnect()
+            nextTryAt = System.currentTimeMillis() + retryAfterMs
+            throw e
+        }
+    }
+
     private fun ensureConnected() {
         if (sock != null) return
         val now = System.currentTimeMillis()
@@ -89,11 +142,12 @@ class RemoteEstimator(
             s.tcpNoDelay = true
             s.connect(InetSocketAddress(host, port), connectTimeoutMs)
             s.soTimeout = readTimeoutMs
-            s.getOutputStream().apply { write(RemoteProtocol.encodeHello(token)); flush() }
+            val magic = if (stereo) RemoteProtocol.MAGIC2 else RemoteProtocol.MAGIC
+            s.getOutputStream().apply { write(RemoteProtocol.encodeHello(token, magic)); flush() }
             val ins = DataInputStream(s.getInputStream())
             val reply = ByteArray(5)
             ins.readFully(reply)
-            if (!reply.copyOfRange(0, 4).contentEquals(RemoteProtocol.MAGIC)) throw IOException("not a MuteHaram server")
+            if (!reply.copyOfRange(0, 4).contentEquals(magic)) throw IOException("not a MuteHaram server (or too old for stereo: update the PC)")
             if (reply[4].toInt() != 0) throw IOException("server refused the token")
             sock = s
             input = ins

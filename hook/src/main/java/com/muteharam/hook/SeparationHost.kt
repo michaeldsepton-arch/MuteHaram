@@ -53,7 +53,7 @@ object SeparationHost {
                 val host = hostPort.substring(0, i)
                 val port = hostPort.substring(i + 1).toIntOrNull()
                 if (port == null) { once("bad muteharam_server value: $hostPort"); return null }
-                return RemoteEstimator(host, port, HookSettings.token, chunkSamples())
+                return RemoteEstimator(host, port, HookSettings.token, chunkSamples(), stereo = HookSettings.stereo)
             }
             // the Engine app on this same device (see engine/): same protocol, loopback address
             "local" -> return RemoteEstimator("127.0.0.1", 47801, "", chunkSamples())
@@ -84,7 +84,7 @@ object SeparationHost {
                         slackMs = 150,
                     )
                     Log.i(TAG, "separation stream $id: ${HookSettings.mode}, rate=$rate ch=$channels, " +
-                        "latency ${pipeline.latencyMs} ms")
+                        "latency ${pipeline.latencyMs} ms" + if (pipeline.isStereo) ", stereo" else ", mono mix")
                 }
             } catch (t: Throwable) {
                 once("could not start separation (${HookSettings.mode}): $t")

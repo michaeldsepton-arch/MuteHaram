@@ -15,6 +15,13 @@ Protocol (all integers little-endian), one TCP connection per audio stream:
   client -> server   u32 seq | u32 n | n * float32      mono audio, 44100 Hz
   server -> client   u32 seq | u32 n | n * float32      music estimate, same length
                      (n = 0xFFFFFFFF means "failed", no payload)
+
+Version 2 ("MHR2", used by newer tablet builds): same hello/reply with b"MHR2", then
+  client -> server   u32 seq | u32 n | u32 ch | ch * n * int16     planar (all of L, then all of R)
+  server -> client   u32 seq | u32 n | u32 ch | ch * n * int16     music estimate per channel
+                     (n = 0xFFFFFFFF means "failed": the 12-byte header only)
+Left and right are cleaned separately (like the PC player does), and 16-bit samples
+keep the data per window to a quarter of what version 1 needs for stereo.
 """
 import json
 import os
@@ -33,6 +40,7 @@ from . import config
 from .model import load_music_model
 
 MAGIC = b"MHR1"
+MAGIC2 = b"MHR2"
 PORT = 47801
 MAX_SAMPLES = 44100 * 30
 ERROR_N = 0xFFFFFFFF
@@ -93,6 +101,48 @@ class Engine:
         self.busy += time.time() - t0
         return y
 
+    @torch.no_grad()
+    def music_batch(self, x):
+        """x: [ch, n] float32 -> music estimate [ch, n] (each channel cleaned on its own)."""
+        t0 = time.time()
+        with self.lock:
+            t = torch.from_numpy(np.ascontiguousarray(x))[:, None, :].to(self.device)
+            y = self.net(t)[:, 0, :].float().cpu().numpy()
+        self.windows += 1
+        self.busy += time.time() - t0
+        return y
+
+
+def serve_v2(sock, engine, peer, state):
+    """One version-2 request: planar int16 channels in, planar int16 music estimates out."""
+    seq, n, ch = struct.unpack("<III", read_exact(sock, 12))
+    if n == 0 or n > MAX_SAMPLES or ch not in (1, 2):
+        sock.sendall(struct.pack("<III", seq, ERROR_N, 0))
+        if n == 0 or (n <= MAX_SAMPLES and ch <= 8):
+            read_exact(sock, n * ch * 2)          # throw the payload away so the stream stays in step
+            return
+        raise ConnectionError("request too large")
+    t0 = time.time()
+    raw = np.frombuffer(read_exact(sock, n * ch * 2), dtype="<i2").reshape(ch, n)
+    x = raw.astype(np.float32) / 32768.0
+    try:
+        y = engine.music_batch(x)
+        out = (np.clip(y, -1.0, 1.0) * 32767.0).astype("<i2")
+        sock.sendall(struct.pack("<III", seq, n, ch) + out.tobytes())
+    except Exception as ex:
+        print(f"{peer}: processing failed: {ex!r}", flush=True)
+        sock.sendall(struct.pack("<III", seq, ERROR_N, 0))
+        return
+    state["served"] += 1
+    if state["served"] % 10 == 1:
+        rin = float(np.sqrt(np.mean(x * x)) + 1e-9)
+        rmu = float(np.sqrt(np.mean(y * y)) + 1e-9)
+        rres = float(np.sqrt(np.mean((x - y) ** 2)) + 1e-9)
+        print(f"{peer}: window {state['served']} ({ch} ch, {n/44100:.1f}s of audio) took "
+              f"{(time.time()-t0)*1000:.0f} ms | sound in {20*np.log10(rin):.0f} dB, "
+              f"music found {20*np.log10(rmu):.0f} dB, left after removal {20*np.log10(rres):.0f} dB",
+              flush=True)
+
 
 def make_handler(engine, token):
     class Handler(socketserver.BaseRequestHandler):
@@ -102,19 +152,25 @@ def make_handler(engine, token):
             sock.settimeout(60)
             peer = self.client_address[0]
             try:
-                if read_exact(sock, 4) != MAGIC:
+                magic = read_exact(sock, 4)
+                if magic not in (MAGIC, MAGIC2):
                     return
+                v2 = magic == MAGIC2
                 tlen = read_exact(sock, 1)[0]
                 got = read_exact(sock, tlen).decode("utf-8", "replace")
                 ok = (not token) or secrets.compare_digest(got, token)
-                sock.sendall(MAGIC + bytes([0 if ok else 1]))
+                sock.sendall(magic + bytes([0 if ok else 1]))
                 if not ok:
                     print(f"{peer}: wrong token, closed", flush=True)
                     return
                 print(f"{peer}: connected", flush=True)
                 served = 0
                 dump = []
+                state = {"served": 0}
                 while True:
+                    if v2:
+                        serve_v2(sock, engine, peer, state)
+                        continue
                     seq, n = struct.unpack("<II", read_exact(sock, 8))
                     if n == 0 or n > MAX_SAMPLES:
                         sock.sendall(struct.pack("<II", seq, ERROR_N))

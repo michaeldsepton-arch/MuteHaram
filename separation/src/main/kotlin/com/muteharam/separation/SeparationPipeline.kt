@@ -52,11 +52,17 @@ class SeparationPipeline(
     private val hopFrames = plan.hopFrames                     // Hs
     val latencyFrames: Int = plan.latencyFrames
     val latencyMs: Int get() = (latencyFrames * 1000L / sampleRate).toInt()
+    /** True when left and right are cleaned separately. */
+    val isStereo: Boolean get() = stereo
 
     // ---- rings (indices are absolute stream frame numbers, stored modulo cap)
     private val cap = latencyFrames + 2 * windowFrames + sampleRate
     private val orig = FloatArray(cap * channels)
-    private val music = FloatArray(cap)
+    // Two-channel streams on an estimator that can do it: left and right are cleaned as separate signals
+    // (a mono mix loses the wide stereo part of the music, which then stays audible).
+    private val stereo = channels == 2 && estimator.stereoCapable
+    private val music = FloatArray(cap)                         // mono mix, or the left channel
+    private val musicR = if (stereo) FloatArray(cap) else music
     private val blockOk = BooleanArray(cap / max(1, hopFrames) + 8)
 
     private val inCount = AtomicLong(0)        // frames received
@@ -66,6 +72,8 @@ class SeparationPipeline(
     private val toModel = Resampler(sampleRate, modelRate)
     private val fromModel = Resampler(modelRate, sampleRate)
     private val mixBuf = FloatArray(windowFrames)
+    private val winL = if (stereo) FloatArray(windowFrames) else mixBuf
+    private val winR = if (stereo) FloatArray(windowFrames) else mixBuf
 
     // stats
     @Volatile var blocksProcessed = 0L; private set
@@ -113,12 +121,14 @@ class SeparationPipeline(
             }
             val slot = (idx % cap).toInt()
             var m = 0f
+            var mr = 0f
             if (idx < doneFrames && blockOk[((idx / hopFrames) % blockOk.size).toInt()]) {
                 m = music[slot] * gain
+                mr = if (stereo) musicR[slot] * gain else m
             } else {
                 late++
             }
-            for (c in 0 until ch) x[o + c] = orig[slot * ch + c] - m
+            for (c in 0 until ch) x[o + c] = orig[slot * ch + c] - (if (c == 1) mr else m)
         }
         if (late > 0) lateFrames += late
     }
@@ -176,23 +186,41 @@ class SeparationPipeline(
             finishBlock(gen, k, ok = false)
             return true
         }
-        // mono mix of the window (zero before the start of the stream)
+        // the window: a mono mix, or left and right on their own (zero before the start of the stream)
         for (i in 0 until windowFrames) {
             val idx = ws + i
-            if (idx < 0) { mixBuf[i] = 0f; continue }
+            if (idx < 0) { mixBuf[i] = 0f; if (stereo) { winL[i] = 0f; winR[i] = 0f }; continue }
             val slot = (idx % cap).toInt()
-            var s = 0f
-            for (c in 0 until channels) s += orig[slot * channels + c]
-            mixBuf[i] = s / channels
+            if (stereo) {
+                winL[i] = orig[slot * 2]
+                winR[i] = orig[slot * 2 + 1]
+            } else {
+                var s = 0f
+                for (c in 0 until channels) s += orig[slot * channels + c]
+                mixBuf[i] = s / channels
+            }
         }
         val t0 = System.nanoTime()
         val back: FloatArray
+        var backR: FloatArray = FloatArray(0)
         try {
-            val atModel = toModel.process(mixBuf, windowFrames)
-            val chunkIn = FloatArray(chunk)
-            System.arraycopy(atModel, 0, chunkIn, 0, min(atModel.size, chunk))
-            val musicModel = estimator.estimate(chunkIn)
-            back = fromModel.process(musicModel, musicModel.size)
+            if (stereo) {
+                val cl = FloatArray(chunk)
+                val cr = FloatArray(chunk)
+                val al = toModel.process(winL, windowFrames)
+                val ar = toModel.process(winR, windowFrames)
+                System.arraycopy(al, 0, cl, 0, min(al.size, chunk))
+                System.arraycopy(ar, 0, cr, 0, min(ar.size, chunk))
+                val m = estimator.estimateStereo(cl, cr)
+                back = fromModel.process(m[0], m[0].size)
+                backR = fromModel.process(m[1], m[1].size)
+            } else {
+                val atModel = toModel.process(mixBuf, windowFrames)
+                val chunkIn = FloatArray(chunk)
+                System.arraycopy(atModel, 0, chunkIn, 0, min(atModel.size, chunk))
+                val musicModel = estimator.estimate(chunkIn)
+                back = fromModel.process(musicModel, musicModel.size)
+            }
         } catch (t: Throwable) {
             // AI unavailable (network down, GPU error ...): this block plays un-cleaned, the next one retries.
             blocksFailed++
@@ -206,7 +234,9 @@ class SeparationPipeline(
         if (generation != gen) return true                         // reset while we were busy
         for (j in 0 until hopFrames) {
             val src = marginFrames + j
-            music[((k * hopFrames + j) % cap).toInt()] = if (src < back.size) back[src] else 0f
+            val slot = ((k * hopFrames + j) % cap).toInt()
+            music[slot] = if (src < back.size) back[src] else 0f
+            if (stereo) musicR[slot] = if (src < backR.size) backR[src] else 0f
         }
         blocksProcessed++
         finishBlock(gen, k, ok = true)
