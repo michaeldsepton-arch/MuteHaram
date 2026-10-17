@@ -52,7 +52,7 @@ jobs:
           ls -l bench/src/main/assets engine/src/main/assets
 
       - name: Unit-test the separation pipeline (pure Kotlin)
-        run: gradle :separation:test --no-daemon --stacktrace
+        run: gradle :separation:test :player:testDebugUnitTest --no-daemon --stacktrace
 
       - name: Build debug APKs (all modules)
         run: gradle assembleDebug --no-daemon --stacktrace
@@ -75,6 +75,12 @@ jobs:
           name: muteharam-engine-debug-apk
           path: engine/build/outputs/apk/debug/engine-debug.apk
 
+      - name: Upload tablet player APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: muteharam-player-debug-apk
+          path: player/build/outputs/apk/debug/player-debug.apk
+
       - name: Upload benchmark APK
         uses: actions/upload-artifact@v4
         with:
@@ -91,6 +97,7 @@ jobs:
             hook/build/outputs/apk/debug/hook-debug.apk
             bench/build/outputs/apk/debug/bench-debug.apk
             engine/build/outputs/apk/debug/engine-debug.apk
+            player/build/outputs/apk/debug/player-debug.apk
           prerelease: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -120,6 +127,7 @@ jobs:
         run: |
           python tests/test_protocol_golden.py
           python tests/test_stream_server.py
+          python tests/test_tablet_server.py
 
       - name: Start the Wi-Fi server
         working-directory: pc

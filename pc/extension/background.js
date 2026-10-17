@@ -173,12 +173,16 @@ try {
       id: "muteharam-pip", title: "Open in a small always-on-top window", contexts: ["action"],
     });
     chrome.contextMenus.create({
+      id: "muteharam-tablet", title: "Send to the tablet (MuteHaram tablet app)", contexts: ["action"],
+    });
+    chrome.contextMenus.create({
       id: "muteharam-live", title: "Clean the sound inside this page (live, about 3 s late)", contexts: ["action"],
     });
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === "muteharam-pip" && tab) openInPlayer(tab, true);
     if (info.menuItemId === "muteharam-live" && tab) startLive(tab);
+    if (info.menuItemId === "muteharam-tablet" && tab) openInPlayer(tab, false, true);
   });
 } catch (e) { /* contextMenus not available: normal click still works */ }
 
@@ -226,7 +230,7 @@ async function startLive(tab) {
   }
 }
 
-async function openInPlayer(tab, pip) {
+async function openInPlayer(tab, pip, tablet) {
   await stateReady;
   const start = await pagePosition(tab.id);
   let payload;
@@ -255,10 +259,14 @@ async function openInPlayer(tab, pip) {
     }
   }
   try {
+    if (tablet) payload.tablet = true;
     const r = await post("/play", payload);
     if (!r.ok) throw new Error("helper said " + r.status);
     pausePage(tab.id);
-    if (!(await chrome.action.getBadgeText({ tabId: tab.id }))) badge(tab.id, "OK", "#1a7f37", "Opening in the MuteHaram player ...");
+    if (!(await chrome.action.getBadgeText({ tabId: tab.id }))) {
+      badge(tab.id, tablet ? "TAB" : "OK", "#1a7f37",
+            tablet ? "Preparing it for the tablet: open the MuteHaram tablet app" : "Opening in the MuteHaram player ...");
+    }
   } catch (e) {
     badge(tab.id, "ERR", "#c62828",
       "Can't reach the MuteHaram helper. Start it with start_helper.bat. (" + e.message + ")");

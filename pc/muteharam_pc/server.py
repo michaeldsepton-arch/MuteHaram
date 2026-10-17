@@ -3,10 +3,14 @@ Serves the cleaned audio of a Session as a virtual 16-bit stereo 44.1 kHz WAV
 file over HTTP (with Range support so players can seek). Nothing is stored as a
 WAV: bytes are produced on demand from the engine's blocks.
 """
+import json
 import re
+import secrets
 import struct
 import sys
 import threading
+import time
+from urllib.parse import parse_qs, urlparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .engine import CHANNELS
@@ -23,7 +27,9 @@ def wav_header(frames):
                         BYTES_PER_FRAME, 16) + b"data" + struct.pack("<I", data))
 
 
-def make_server(session, host="127.0.0.1", port=0):
+def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
+    """token: if set, every request must carry it (?t=... or header X-MuteHaram-Token).
+    routes: {"/session.json": callable -> dict} extra JSON documents (used by the tablet mode)."""
     total = HEADER_LEN + session.total_frames * BYTES_PER_FRAME
     header = wav_header(session.total_frames)
 
@@ -55,10 +61,35 @@ def make_server(session, host="127.0.0.1", port=0):
             self.end_headers()
 
         def do_HEAD(self):
+            self.server.last_request = time.time()
+            if not self._authorised():
+                self.send_error(401)
+                return
             self._head(0, total - 1, False)
 
+        def _authorised(self):
+            if not token:
+                return True
+            q = parse_qs(urlparse(self.path).query)
+            got = (q.get("t") or [self.headers.get("X-MuteHaram-Token", "")])[0]
+            return secrets.compare_digest(got, token)
+
         def do_GET(self):
-            if self.path.split("?")[0] != "/audio.wav":
+            self.server.last_request = time.time()
+            path = self.path.split("?")[0]
+            if not self._authorised():
+                self.send_error(401)
+                return
+            if routes and path in routes:
+                body = json.dumps(routes[path]()).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if path != "/audio.wav":
                 self.send_error(404)
                 return
             start, end, partial = self._range()
@@ -100,5 +131,6 @@ def make_server(session, host="127.0.0.1", port=0):
             super().handle_error(request, client_address)
 
     srv = Server((host, port), Handler)
+    srv.last_request = time.time()
     threading.Thread(target=srv.serve_forever, name="audio-http", daemon=True).start()
     return srv

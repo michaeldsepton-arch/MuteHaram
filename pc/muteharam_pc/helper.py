@@ -21,6 +21,7 @@ EXT_ORIGINS = ("chrome-extension://", "moz-extension://", "edge-extension://")
 
 LIVE_PORT = 47802
 _live_proc = None
+_tablet_proc = None
 
 
 def live_port_open():
@@ -154,6 +155,15 @@ class Handler(BaseHTTPRequestHandler):
                 cmd += ["--pip"]
             if req.get("direct"):
                 cmd += ["--direct"]
+            if req.get("tablet"):
+                cmd += ["--tablet"]
+                global _tablet_proc
+                if _tablet_proc is not None and _tablet_proc.poll() is None:
+                    _tablet_proc.terminate()          # one tablet session at a time
+                    try:
+                        _tablet_proc.wait(5)
+                    except Exception:
+                        pass
             if req.get("referer"):
                 cmd += ["--referer", str(req["referer"])]
             for k, v in (req.get("headers") or {}).items():
@@ -167,7 +177,9 @@ class Handler(BaseHTTPRequestHandler):
             os.makedirs(LOG_DIR, exist_ok=True)
             log = open(os.path.join(LOG_DIR, time.strftime("play-%Y%m%d-%H%M%S.log")), "w")
             flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
-            subprocess.Popen(cmd, cwd=config.PC_DIR, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
+            proc = subprocess.Popen(cmd, cwd=config.PC_DIR, stdout=log, stderr=subprocess.STDOUT, creationflags=flags)
+            if req.get("tablet"):
+                _tablet_proc = proc
             self._json(200, {"ok": True})
         except Exception as ex:
             self._json(500, {"error": repr(ex)})
@@ -176,6 +188,12 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"MuteHaram helper listening on 127.0.0.1:{PORT}  (leave this window open; Ctrl+C to quit)", flush=True)
+    try:
+        from .stream_server import lan_addresses, load_or_create_token
+        print("For the MuteHaram tablet app:  address " + " or ".join(lan_addresses() or ["(this computer)"]) +
+              f"   token {load_or_create_token()}", flush=True)
+    except Exception:
+        pass
     srv.serve_forever()
 
 

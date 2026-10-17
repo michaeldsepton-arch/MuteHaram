@@ -191,6 +191,67 @@ def resolve(url, headers, cfg, log, sub_langs="en.*,ar.*"):
     )
 
 
+def resolve_video(url, cfg, log, sub_langs):
+    """A page address (YouTube ...) -> a direct picture address the tablet can play: (url, headers, subs)."""
+    log("finding the picture address with yt-dlp ...")
+    out = subprocess.run([cfg["yt_dlp"], "-J", "--no-playlist", "-f",
+                          "bv*[height<=?1080][vcodec^=avc1]/bv*[height<=?1080]/b[height<=?1080]/b", url],
+                         capture_output=True, text=True, timeout=180)
+    if out.returncode != 0:
+        raise SystemExit("yt-dlp could not open that link:" + chr(10) + out.stderr[-800:])
+    info = json.loads(out.stdout)
+    subs = []
+    pats = [p for p in str(sub_langs or "").split(",") if p]
+    for table in (info.get("subtitles") or {}, ):
+        for lang, entries in table.items():
+            if any(re.fullmatch(pt, lang) for pt in pats) or "all" in pats:
+                vtt = next((e for e in entries if e.get("ext") == "vtt"), None)
+                if vtt and vtt.get("url"):
+                    subs.append({"url": vtt["url"], "lang": lang})
+    return info["url"], info.get("http_headers", {}), subs, info.get("title")
+
+
+def tablet_kind(url, note_kind):
+    u = url.lower().split("?")[0]
+    if u.endswith(".m3u8") or note_kind in ("master", "media"):
+        return "hls"
+    if u.endswith(".mpd"):
+        return "dash"
+    return "progressive"
+
+
+def run_tablet(a, cfg, r, notes, session, problem, headers, log):
+    """Offer the picture address + the cleaned audio to the tablet app (instead of opening mpv)."""
+    import socket as _socket
+    from .stream_server import load_or_create_token, lan_addresses
+    if session is None:
+        raise SystemExit("The music could not be removed, so nothing is sent to the tablet: " + str(problem))
+    token = load_or_create_token()
+    title = None
+    if is_direct(a.url):
+        video, vheaders, subs = r["mpv_url"], dict(r["headers"] or {}), [{"url": u, "lang": ""} for u in a.sub]
+        kind = tablet_kind(video, (notes.get(video) or {}).get("kind"))
+    else:
+        video, vheaders, subs, title = resolve_video(a.url, cfg, log, a.sub_langs)
+        subs += [{"url": u, "lang": ""} for u in a.sub]
+        kind = tablet_kind(video, None)
+    doc = {"id": int(time.time() * 1000), "title": title or "", "video": video, "kind": kind,
+           "headers": clean_headers(vheaders),
+           "subs": subs, "start": max(0.0, a.start), "duration": session.duration}
+    srv = make_server(session, host="0.0.0.0", port=a.tablet_port, token=token,
+                      routes={"/session.json": lambda: doc})
+    log(f"tablet session ready: {kind} picture, cleaned audio on port {a.tablet_port}")
+    log("In the MuteHaram tablet app use one of these addresses:", ", ".join(lan_addresses()) or "(this computer's address)")
+    log("Waiting for the tablet. (This window closes after 30 minutes without the tablet asking.)")
+    try:
+        while time.time() - srv.last_request < 1800 or time.time() - doc["id"] / 1000 < 120:
+            time.sleep(5)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        session.close()
+
+
 def main(argv=None):
     try:
         run(argv)
@@ -240,6 +301,9 @@ def run(argv=None):
     ap.add_argument("--cpu", action="store_true", help="do not use the GPU")
     ap.add_argument("--channels", choices=["auto", "mono", "stereo"], default=S["channels"],
                     help="stereo = clean left and right separately (needs a GPU); mono = clean the mix once")
+    ap.add_argument("--tablet", action="store_true",
+                    help="do not open mpv: offer the video and the cleaned audio to the MuteHaram tablet app")
+    ap.add_argument("--tablet-port", type=int, default=47804)
     ap.add_argument("--no-player", action="store_true", help="only serve the audio (prints its address)")
     ap.add_argument("--mpv-arg", action="append", default=[], help="extra argument for mpv (repeatable)")
     a = ap.parse_args(argv)
@@ -333,6 +397,8 @@ def run(argv=None):
         if pick:
             log("the address picked for the picture looked audio-only; showing", pick[:100], "instead")
             r["mpv_url"] = pick
+    if a.tablet:
+        return run_tablet(a, cfg, r, notes, session, problem, headers, log)
     if session is not None:
         srv = make_server(session)
         audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"

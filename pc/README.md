@@ -147,3 +147,17 @@ Test: `python tests/test_live_server.py`.
 If voice and picture are not lined up in live mode, click the video once, then press
 **Alt + .** (picture later) or **Alt + ,** (picture earlier) in 40 ms steps; hold **Shift** as well
 for 200 ms steps. The page shows the current offset and remembers it.
+
+## Watch on a tablet: "Send to the tablet" (best quality, no re-encoding)
+
+The PC cleans the sound exactly like the mpv player does; the tablet plays the website's own
+picture directly and the cleaned sound from this PC over Wi-Fi (only the sound crosses Wi-Fi).
+
+1. Install `player-debug.apk` (latest build on the GitHub releases page) on the tablet: **MuteHaram Player**.
+2. Start `start_helper.bat` on the PC. Its window prints `address ... token ...`.
+   Tablet and PC must be on the same network (the PC's own hotspot works well).
+3. In the tablet app tap **Settings** and type the address and token (once).
+4. On the PC, open the video, let it play a few seconds, then **right-click the MuteHaram icon ->
+   "Send to the tablet"**. The tablet starts playing (after a few seconds). Pause, skip and captions
+   are on the tablet. The PC window can stay minimised. A new "Send to the tablet" replaces the old one.
+5. The PC must stay on and connected while you watch. If Windows asks about the firewall, allow private networks.
