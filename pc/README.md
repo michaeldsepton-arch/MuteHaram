@@ -172,3 +172,11 @@ Right-click the MuteHaram toolbar icon: two radio choices set the cleaning for t
   film-score music audible (some orchestral scores are treated as effects by the AI).
 
 The choice is remembered. (Live in-page mode still uses the setting in `settings.json`.)
+
+### Switching while you watch
+
+* **PC player (mpv):** press **C**, or click the new button in the controls bar (the "voice" icon). It switches between
+  "remove the music" and "speech only"; the PC re-cleans from where you are (a few seconds of wait). A message shows which mode is on.
+* **Tablet:** tap the mode button at the top left of the picture. The picture and sound restart from the same spot.
+
+The mode chosen in the extension's menu is just the starting mode.
