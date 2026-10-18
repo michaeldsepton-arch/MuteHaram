@@ -40,6 +40,7 @@ class SessionInfoTest {
     fun modeIsReadAndDefaultsToMusic() {
         assertEquals("speech", SessionInfo.parse("""{"id": 1, "video": "https://v/a.mp4", "mode": "speech"}""").mode)
         assertEquals("bandit", SessionInfo.parse("""{"id": 1, "video": "https://v/a.mp4", "mode": "bandit"}""").mode)
+        assertEquals("sam", SessionInfo.parse("""{"id": 1, "video": "https://v/a.mp4", "mode": "sam"}""").mode)
         assertEquals("music", SessionInfo.parse("""{"id": 1, "video": "https://v/a.mp4", "mode": "nonsense"}""").mode)
     }
 

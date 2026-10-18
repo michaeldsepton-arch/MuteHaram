@@ -36,7 +36,7 @@ data class SessionInfo(
                 subs = subs,
                 startSeconds = o.optDouble("start", 0.0).let { if (it.isNaN() || it < 0) 0.0 else it },
                 ageSeconds = o.optLong("age_s", 0),
-                mode = o.optString("mode").let { if (it == "speech" || it == "bandit") it else "music" },
+                mode = o.optString("mode").let { if (it == "speech" || it == "bandit" || it == "sam") it else "music" },
             )
         }
 

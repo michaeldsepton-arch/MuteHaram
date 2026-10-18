@@ -138,14 +138,18 @@ class MediaSource:
         return proc
 
 
+# modes that work on half-overlapping windows blended smoothly: mode -> block length in seconds
+BLEND_HOP = {"bandit": 4.0, "sam": 8.0}
+
+
 class Session:
     def __init__(self, source, duration=None, window_s=10.0, hop_s=6.0, lookahead_s=150.0,
                  music_gain=1.0, device=None, models_dir=None, log=print,
                  channels_mode="auto", patience_s=45.0, mode="music", start_block=0,
                  bandit_recipe="plain"):
-        assert mode in ("music", "speech", "bandit")
-        if mode == "bandit":
-            window_s, hop_s = 8.0, 4.0       # what this model was built for
+        assert mode in ("music", "speech", "bandit", "sam")
+        if mode in BLEND_HOP:
+            window_s, hop_s = 2 * BLEND_HOP[mode], BLEND_HOP[mode]       # bandit: what that model was built for
         assert window_s > hop_s > 0
         self.src = source
         self.log = log
@@ -159,7 +163,7 @@ class Session:
         self.win = self.hop + 2 * self.margin
         self.bandit_recipe = bandit_recipe
         self._bprev = None
-        if mode == "bandit":
+        if mode in BLEND_HOP:
             # windows overlap by half and are blended smoothly (no hard seams): window b covers [b*hop, b*hop + 2*hop)
             self.margin = 0
             self.win = 2 * self.hop
@@ -171,6 +175,11 @@ class Session:
             from .bandit_model import load_bandit
             self.net, self.device = load_bandit(None, device)
             self.target = None
+        elif mode == "sam":
+            from .model import pick_device
+            from .sam_model import get_client
+            self.net, self.device, self.target = None, pick_device(device), None
+            self.sam = get_client(log)                   # a separate program holds the model (own environment)
         else:
             self.net, self.device, self.target = load_network("music" if mode == "music" else "dialog",
                                                               models_dir, device)
@@ -263,7 +272,7 @@ class Session:
 
     def want_position(self, new_mode):
         """The block the player is at, in the units of a session running `new_mode` (their hop sizes differ)."""
-        hop_new = int(round((4.0 if new_mode == "bandit" else 6.0) * SAMPLE_RATE))
+        hop_new = int(round(BLEND_HOP.get(new_mode, 6.0) * SAMPLE_RATE))
         return (self.want * self.hop) // hop_new
 
     def stop_work(self):
@@ -272,12 +281,34 @@ class Session:
         with self.cv:
             self.cv.notify_all()
         self._kill_decoder()
+        self._release_gpu()
+
+    def release_models(self):
+        """Drop this session's hold on the graphics card (after stop_work; its finished audio stays readable)."""
+        self.net = None
+        try:
+            from . import model as _model
+            _model._NET_CACHE.clear()
+            from . import bandit_model as _bm
+            _bm._CACHE.clear()
+            import gc
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _release_gpu(self):
+        if self.mode == "sam":
+            from .sam_model import shutdown
+            shutdown()                      # give the graphics card back at once
 
     def close(self):
         self._stop = True
         with self.cv:
             self.cv.notify_all()
         self._kill_decoder()
+        self._release_gpu()
         # Let the worker finish the block it is on BEFORE the cache file is unmapped:
         # writing into an unmapped file would crash the whole program.
         self.thread.join(timeout=30)
@@ -444,9 +475,13 @@ class Session:
             return tonal(music) + tonal(sfx)
         return music + tonal(sfx)                          # "full": music estimate + tonal part of the effects estimate
 
+    def _sam_removal(self, x):
+        """What SAM Audio takes out of one window [win, 2]: the window minus its music-free version."""
+        return x - self.sam.remove_music(x)
+
     def _clean_bandit(self, x, b):
         hop = self.hop
-        rem = self._bandit_removal(x)                      # for window b
+        rem = self._sam_removal(x) if self.mode == "sam" else self._bandit_removal(x)      # for window b
         prev = self._bprev
         if prev is not None and prev[0] == b - 1:
             n = np.arange(hop, dtype=np.float32)
@@ -461,7 +496,7 @@ class Session:
     @torch.no_grad()
     def _clean(self, x, b=None):
         """x: [win, 2] float32 -> cleaned centre [hop, 2] int16."""
-        if self.mode == "bandit":
+        if self.mode in BLEND_HOP:
             return self._clean_bandit(x, b)
         c = slice(self.margin, self.margin + self.hop)
         if self.stereo_sep:
@@ -513,12 +548,25 @@ class SessionHub:
         with self.lock:
             if mode == self.cur.mode:
                 return self.cur.mode
+            old = self.cur
+            if "sam" in (mode, old.mode):
+                old.stop_work()              # SAM Audio needs most of the graphics memory: nothing else may hold it
+                old.release_models()
             try:
-                new = self.remake(mode, self.cur.want_position(mode))
+                new = self.remake(mode, old.want_position(mode))
             except Exception as ex:
                 self.log(f"could not switch to {mode}: {ex!r}")
-                return self.cur.mode
-            old, self.cur = self.cur, new
+                if old._stop:
+                    try:
+                        new = self.remake(old.mode, old.want_position(old.mode))
+                    except Exception as ex2:
+                        self.log(f"could not go back to {old.mode} either: {ex2!r}")
+                        return old.mode
+                    self.cur = new
+                    threading.Timer(15.0, old.close).start()
+                    return new.mode
+                return old.mode
+            self.cur = new
             self.log(f"cleaning mode is now: {mode}")
             # the old session must stop competing for the graphics card and the stream RIGHT NOW; its finished
             # audio stays readable for a while (requests may still be reading it), then it is closed for good

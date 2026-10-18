@@ -170,9 +170,11 @@ async function post(path, body) {
 try {
   chrome.runtime.onInstalled.addListener(() => {
     chrome.storage.local.get("mode").then((v) => {
-      const cur = v.mode === "speech" || v.mode === "bandit" ? v.mode : "music";
+      const cur = v.mode === "speech" || v.mode === "bandit" || v.mode === "sam" ? v.mode : "music";
       chrome.contextMenus.create({ id: "muteharam-mode-music", type: "radio", checked: cur === "music",
         title: "Cleaning: remove the MUSIC (standard, fastest)", contexts: ["action"] });
+      chrome.contextMenus.create({ id: "muteharam-mode-sam", type: "radio", checked: cur === "sam",
+        title: "Cleaning: remove the MUSIC with SAM Audio (best; needs setup_sam.py)", contexts: ["action"] });
       chrome.contextMenus.create({ id: "muteharam-mode-bandit", type: "radio", checked: cur === "bandit",
         title: "Cleaning: remove the MUSIC with the BETTER film model (Bandit v2)", contexts: ["action"] });
       chrome.contextMenus.create({ id: "muteharam-mode-speech", type: "radio", checked: cur === "speech",
@@ -191,6 +193,7 @@ try {
   chrome.contextMenus.onClicked.addListener((info, tab) => {
     if (info.menuItemId === "muteharam-mode-music") chrome.storage.local.set({ mode: "music" });
     if (info.menuItemId === "muteharam-mode-bandit") chrome.storage.local.set({ mode: "bandit" });
+    if (info.menuItemId === "muteharam-mode-sam") chrome.storage.local.set({ mode: "sam" });
     if (info.menuItemId === "muteharam-mode-speech") chrome.storage.local.set({ mode: "speech" });
     if (info.menuItemId === "muteharam-pip" && tab) openInPlayer(tab, true);
     if (info.menuItemId === "muteharam-live" && tab) startLive(tab);
@@ -272,7 +275,7 @@ async function openInPlayer(tab, pip, tablet) {
   }
   try {
     if (tablet) payload.tablet = true;
-    { const m = (await chrome.storage.local.get("mode")).mode; payload.mode = m === "speech" || m === "bandit" ? m : "music"; }
+    { const m = (await chrome.storage.local.get("mode")).mode; payload.mode = m === "speech" || m === "bandit" || m === "sam" ? m : "music"; }
     const r = await post("/play", payload);
     if (!r.ok) throw new Error("helper said " + r.status);
     pausePage(tab.id);

@@ -7,9 +7,10 @@ if not port then return end
 local names = {
     music  = "MUSIC REMOVAL, standard (voices and sound effects stay)",
     bandit = "MUSIC REMOVAL, better film model (voices and sound effects stay)",
+    sam    = "MUSIC REMOVAL, SAM Audio, best (voices and sound effects stay)",
     speech = "SPEECH ONLY (music and sound effects removed)",
 }
-local nextmode = { music = "bandit", bandit = "speech", speech = "music" }
+local nextmode = { music = "sam", sam = "bandit", bandit = "speech", speech = "music" }
 local busy = false
 
 local function toggle()

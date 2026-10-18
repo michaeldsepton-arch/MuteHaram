@@ -279,6 +279,7 @@ class MainActivity : AppCompatActivity() {
     private fun showMode(mode: String) {
         modeButton.text = when (mode) {
             "speech" -> "Sound: SPEECH ONLY  (tap: next mode)"
+            "sam" -> "Sound: MUSIC REMOVED, SAM Audio (best)  (tap: next mode)"
             "bandit" -> "Sound: MUSIC REMOVED, better model  (tap: next mode)"
             else -> "Sound: MUSIC REMOVED, standard  (tap: next mode)"
         }
@@ -295,8 +296,8 @@ class MainActivity : AppCompatActivity() {
     /** Ask the PC to clean in the other mode, then play again from the same spot. */
     private fun switchMode() {
         val s = current ?: return
-        val want = when (s.mode) { "music" -> "bandit"; "bandit" -> "speech"; else -> "music" }
-        setStatus("Switching to " + (when (want) { "speech" -> "speech only"; "bandit" -> "the better music removal"; else -> "standard music removal" }) + " ...")
+        val want = when (s.mode) { "music" -> "sam"; "sam" -> "bandit"; "bandit" -> "speech"; else -> "music" }
+        setStatus("Switching to " + (when (want) { "speech" -> "speech only"; "sam" -> "SAM Audio music removal"; "bandit" -> "the better music removal"; else -> "standard music removal" }) + " ...")
         val host = curHost
         val token = curToken
         Thread {
