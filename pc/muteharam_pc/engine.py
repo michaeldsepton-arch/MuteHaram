@@ -138,8 +138,9 @@ class MediaSource:
         return proc
 
 
-# modes that work on half-overlapping windows blended smoothly: mode -> block length in seconds
-BLEND_HOP = {"bandit": 4.0, "sam": 8.0}
+# modes that work on overlapping windows blended smoothly: mode -> (window, block length) in seconds
+BLEND = {"bandit": (8.0, 4.0), "sam": (16.0, 12.0)}
+BLEND_HOP = {m: v[1] for m, v in BLEND.items()}
 
 
 class Session:
@@ -149,7 +150,7 @@ class Session:
                  bandit_recipe="plain"):
         assert mode in ("music", "speech", "bandit", "sam")
         if mode in BLEND_HOP:
-            window_s, hop_s = 2 * BLEND_HOP[mode], BLEND_HOP[mode]       # bandit: what that model was built for
+            window_s, hop_s = BLEND[mode]       # bandit: what that model was built for
         assert window_s > hop_s > 0
         self.src = source
         self.log = log
@@ -166,7 +167,7 @@ class Session:
         if mode in BLEND_HOP:
             # windows overlap by half and are blended smoothly (no hard seams): window b covers [b*hop, b*hop + 2*hop)
             self.margin = 0
-            self.win = 2 * self.hop
+            self.win = int(round(window_s * SAMPLE_RATE))
         self.nblocks = -(-self.total_frames // self.hop)
         self.lookahead_blocks = max(2, int(lookahead_s / hop_s))
 
@@ -429,7 +430,15 @@ class Session:
                 dt = 0.0
                 if self._fill(s, e, max(0, s)):
                     t0 = time.time()
-                    cleaned = self._clean(self._window(s, e), b)
+                    x = self._window(s, e)
+                    eff = None
+                    if self.mode in BLEND_HOP and e > self.total_frames and s > 0 and self.total_frames >= self.win:
+                        # the last window would be mostly silence (zeros past the end), which the model handles badly:
+                        # clean a full window that ends exactly at the end instead and use its matching part
+                        s2 = self.total_frames - self.win
+                        if self._fill(s2, s2 + self.win, s2):
+                            eff = (s - s2, self._window(s2, s2 + self.win))
+                    cleaned = self._clean(x, b, eff)
                     if self._stop:
                         return
                     self.store[b * self.hop:(b + 1) * self.hop] = cleaned
@@ -447,6 +456,8 @@ class Session:
                     self._trim(b)
             except Exception as ex:
                 # One bad block must never stop everything: mark it, reset the reader, carry on.
+                if self._stop:
+                    return                         # shut down in the middle of a block: nothing to report
                 import traceback
                 traceback.print_exc()
                 self._kill_decoder()
@@ -479,14 +490,22 @@ class Session:
         """What SAM Audio takes out of one window [win, 2]: the window minus its music-free version."""
         return x - self.sam.remove_music(x)
 
-    def _clean_bandit(self, x, b):
+    def _clean_bandit(self, x, b, eff=None):
         hop = self.hop
-        rem = self._sam_removal(x) if self.mode == "sam" else self._bandit_removal(x)      # for window b
+        xr = eff[1] if eff else x
+        rem = self._sam_removal(xr) if self.mode == "sam" else self._bandit_removal(xr)      # for window b
+        if eff:                                            # line the shifted window up with window b
+            sh = eff[0]
+            al = np.zeros_like(rem)
+            al[:len(rem) - sh] = rem[sh:]
+            rem = al
         prev = self._bprev
+        ov = self.win - hop                                # the part of this window that the previous window also covers
         if prev is not None and prev[0] == b - 1:
-            n = np.arange(hop, dtype=np.float32)
-            up = np.sin(0.5 * np.pi * (n + 0.5) / hop) ** 2          # raised-cosine blend of the two overlapping windows
-            est = prev[1][hop:2 * hop] * (1.0 - up)[:, None] + rem[:hop] * up[:, None]
+            n = np.arange(ov, dtype=np.float32)
+            up = np.sin(0.5 * np.pi * (n + 0.5) / ov) ** 2           # raised-cosine blend of the two overlapping windows
+            est = rem[:hop].copy()
+            est[:ov] = prev[1][hop:hop + ov] * (1.0 - up)[:, None] + rem[:ov] * up[:, None]
         else:
             est = rem[:hop]                                # first block after a start or a skip
         self._bprev = (b, rem)
@@ -494,10 +513,10 @@ class Session:
         return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
 
     @torch.no_grad()
-    def _clean(self, x, b=None):
+    def _clean(self, x, b=None, eff=None):
         """x: [win, 2] float32 -> cleaned centre [hop, 2] int16."""
         if self.mode in BLEND_HOP:
-            return self._clean_bandit(x, b)
+            return self._clean_bandit(x, b, eff)
         c = slice(self.margin, self.margin + self.hop)
         if self.stereo_sep:
             t = torch.from_numpy(np.ascontiguousarray(x.T)).to(self.device)[:, None, :]   # [2,1,win]

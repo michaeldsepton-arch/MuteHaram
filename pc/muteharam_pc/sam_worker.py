@@ -13,6 +13,7 @@ import sys
 
 CH = 2
 MODEL = os.environ.get("MUTEHARAM_SAM_MODEL", "facebook/sam-audio-small")
+PROMPT = os.environ.get("MUTEHARAM_SAM_PROMPT", "background music")      # "music" left more of a loud score in
 STEP = float(os.environ.get("MUTEHARAM_SAM_STEP", "0.25"))      # 4 solver steps: fastest setting that sounded the same
 
 
@@ -62,6 +63,17 @@ def main():
     for p in model.parameters():
         p.requires_grad_(False)
     proc = SAMAudioProcessor.from_pretrained(MODEL)
+
+    # the model decodes two sounds (the music and everything else); only "everything else" is used, so decode just that
+    # (rows alternate target, residual): about 30% faster, same result
+    decode = model.audio_codec.decode
+
+    def decode_residual_only(g):
+        r = decode(g[1::2])
+        full = torch.zeros((g.shape[0],) + tuple(r.shape[1:]), device=r.device, dtype=r.dtype)
+        full[1::2] = r
+        return full
+    model.audio_codec.decode = decode_residual_only
     sr = proc.audio_sampling_rate
     ode = {"method": "euler", "options": {"step_size": STEP}}
     out.write(b"READY\n")
@@ -75,18 +87,17 @@ def main():
         if raw is None:
             return
         x = np.frombuffer(raw, dtype=np.float32).reshape(n, CH)
-        mono = x.mean(axis=1)
-        w48 = resample_poly(mono, sr // 300, 44100 // 300).astype(np.float32)
-        wav = torch.from_numpy(w48)[None]
-        batch = proc(audios=[wav], descriptions=["music"]).to("cuda")
-        with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16):
-            r = model.separate(batch, predict_spans=False, reranking_candidates=1, ode_opt=ode)
-        res = r.residual[0].float().cpu().numpy().reshape(-1)
-        res = resample_poly(res, 44100 // 300, sr // 300).astype(np.float32)
-        if len(res) < n:
-            res = np.pad(res, (0, n - len(res)))
-        res = res[:n]
-        y = res[:, None] + (x - mono[:, None])           # SAM's mono result + the original stereo difference
+        y = np.empty_like(x)
+        for c in range(CH):                              # left and right on their own: a score is often wide in stereo
+            w48 = resample_poly(x[:, c], sr // 300, 44100 // 300).astype(np.float32)
+            batch = proc(audios=[torch.from_numpy(w48)[None]], descriptions=[PROMPT]).to("cuda")
+            with torch.inference_mode(), torch.autocast("cuda", dtype=torch.float16):
+                r = model.separate(batch, predict_spans=False, reranking_candidates=1, ode_opt=ode)
+            res = r.residual[0].float().cpu().numpy().reshape(-1)
+            res = resample_poly(res, 44100 // 300, sr // 300).astype(np.float32)
+            if len(res) < n:
+                res = np.pad(res, (0, n - len(res)))
+            y[:, c] = res[:n]
         out.write(np.ascontiguousarray(y, dtype=np.float32).tobytes())
 
 
