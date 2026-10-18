@@ -59,6 +59,13 @@ class MainActivity : AppCompatActivity() {
     @Volatile
     private var currentId = -1L
 
+    // a session the PC prepared a while ago is only played when asked for (tap the message)
+    @Volatile
+    private var pendingOld: SessionInfo? = null
+
+    @Volatile
+    private var acceptedOldId = -1L
+
     @Volatile
     private var running = false
     private val ui = Handler(Looper.getMainLooper())
@@ -84,7 +91,10 @@ class MainActivity : AppCompatActivity() {
             textSize = 16f
             setPadding(32, 20, 32, 20)
             gravity = Gravity.CENTER
-            setOnClickListener { currentId = -1L }       // tap to try again
+            setOnClickListener {            // tap: try again, or play the old session that is waiting
+                pendingOld?.let { acceptedOldId = it.id; pendingOld = null }
+                currentId = -1L
+            }
         }
         root.addView(
             status,
@@ -230,8 +240,20 @@ class MainActivity : AppCompatActivity() {
                     val url = "http://" + host + ":47804/session.json?t=" + URLEncoder.encode(tok, "UTF-8")
                     val s = SessionInfo.parse(httpGet(url))
                     if (s.id != currentId) {
-                        currentId = s.id
-                        ui.post { play(s, host, tok) }
+                        if (s.ageSeconds > 180 && s.id != acceptedOldId) {
+                            pendingOld = s
+                            if (player == null) {
+                                setStatus(
+                                    "The PC still has a session from " + (s.ageSeconds / 60) + " minutes ago." + "\n" +
+                                        "For a fresh one: on the PC use the MuteHaram icon's menu, Send to the tablet." + "\n" +
+                                        "Or tap here to play the old one anyway."
+                                )
+                            }
+                        } else {
+                            pendingOld = null
+                            currentId = s.id
+                            ui.post { play(s, host, tok) }
+                        }
                     } else if (player == null) {
                         setStatus("Connected to the PC")
                     }

@@ -283,7 +283,8 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log):
            "subs": subs, "start": max(0.0, a.start), "duration": session.duration}
     stop_other_tablet_sessions(log)
     srv = make_server(hub, host="0.0.0.0", port=a.tablet_port, token=token,
-                      routes={"/session.json": lambda q: dict(doc, mode=hub.mode), "/mode": mode_route(hub)})
+                      routes={"/session.json": lambda q: dict(doc, mode=hub.mode, age_s=int(time.time() - doc["id"] / 1000)),
+                              "/mode": mode_route(hub)})
     log(f"tablet session ready: {kind} picture, cleaned audio on port {a.tablet_port}")
     log("In the MuteHaram tablet app use one of these addresses:", ", ".join(lan_addresses()) or "(this computer's address)")
     log("Waiting for the tablet. (This window closes after 30 minutes without the tablet asking.)")

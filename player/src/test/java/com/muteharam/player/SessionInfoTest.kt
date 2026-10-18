@@ -31,6 +31,12 @@ class SessionInfoTest {
     }
 
     @Test
+    fun ageIsReadAndDefaultsToZero() {
+        assertEquals(125L, SessionInfo.parse("""{"id": 1, "video": "https://v/a.mp4", "age_s": 125}""").ageSeconds)
+        assertEquals(0L, SessionInfo.parse("""{"id": 1, "video": "https://v/a.mp4"}""").ageSeconds)
+    }
+
+    @Test
     fun modeIsReadAndDefaultsToMusic() {
         assertEquals("speech", SessionInfo.parse("""{"id": 1, "video": "https://v/a.mp4", "mode": "speech"}""").mode)
         assertEquals("bandit", SessionInfo.parse("""{"id": 1, "video": "https://v/a.mp4", "mode": "bandit"}""").mode)

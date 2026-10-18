@@ -187,7 +187,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json(500, {"error": repr(ex)})
 
 
+def clear_old_tablet_sessions():
+    """Sessions left over from an earlier run (still running old code) must not be offered to the tablet."""
+    if os.name != "nt":
+        return
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'muteharam_pc.play' -and "
+          "$_.CommandLine -match '--tablet' -and $_.CommandLine -notmatch 'Get-CimInstance' } | "
+          "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }")
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, timeout=30,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
+    except Exception:
+        pass
+
+
 def main():
+    clear_old_tablet_sessions()
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"MuteHaram helper listening on 127.0.0.1:{PORT}  (leave this window open; Ctrl+C to quit)", flush=True)
     try:

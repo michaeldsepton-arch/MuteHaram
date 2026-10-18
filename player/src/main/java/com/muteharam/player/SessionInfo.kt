@@ -11,6 +11,7 @@ data class SessionInfo(
     val headers: Map<String, String>,
     val subs: List<Pair<String, String>>, // url to language
     val startSeconds: Double,
+    val ageSeconds: Long = 0,            // how long ago the PC prepared it
     val mode: String = "music",         // "music" = standard music removal, "bandit" = better film model, "speech" = speech only
 ) {
     companion object {
@@ -34,6 +35,7 @@ data class SessionInfo(
                 headers = headers,
                 subs = subs,
                 startSeconds = o.optDouble("start", 0.0).let { if (it.isNaN() || it < 0) 0.0 else it },
+                ageSeconds = o.optLong("age_s", 0),
                 mode = o.optString("mode").let { if (it == "speech" || it == "bandit") it else "music" },
             )
         }
