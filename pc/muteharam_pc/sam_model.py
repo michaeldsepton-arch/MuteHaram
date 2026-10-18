@@ -106,10 +106,15 @@ def get_client(log=print):
         return _client
 
 
-def shutdown():
+def shutdown(client=None):
+    """Stop the worker. With `client`: only that one (a session that is closed late must not kill the worker a newer
+    session is using)."""
     global _client
     with _lock:
-        c, _client = _client, None
+        if client is not None and client is not _client:
+            c = client
+        else:
+            c, _client = _client, None
     if c is not None:
         c.close()
 

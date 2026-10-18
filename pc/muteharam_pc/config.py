@@ -41,6 +41,7 @@ DEFAULT_SETTINGS = {
     "window": 10.0,           # AI window in seconds (bigger = better, slower)
     "hop": 6.0,
     "bandit_recipe": "plain", # better film model: "plain" | "tonal" | "full" (see play.py --help)
+    "sam_intro_mute_s": 4.0,  # SAM Audio mode: keep the first seconds of the FILM quiet (no context yet = music leaks); 0 = off
     "tablet_mode": "",        # "" = same as "mode"; "speech" = keep only voices for the tablet (drops music AND effects)
     "channels": "auto",       # auto | mono | stereo
     "sub_langs": "en.*,ar.*", # YouTube caption languages to load (yt-dlp style, "all" for everything)

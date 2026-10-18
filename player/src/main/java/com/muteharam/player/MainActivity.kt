@@ -214,10 +214,10 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun httpGet(url: String): String {
+    private fun httpGet(url: String, readTimeoutMs: Int = 4000): String {
         val c = URL(url).openConnection() as HttpURLConnection
         c.connectTimeout = 3000
-        c.readTimeout = 4000
+        c.readTimeout = readTimeoutMs
         try {
             when (c.responseCode) {
                 200 -> return c.inputStream.bufferedReader().readText()
@@ -294,16 +294,36 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Ask the PC to clean in the other mode, then play again from the same spot. */
+    @Volatile private var switching = false
+
     private fun switchMode() {
+        if (switching) {
+            setStatus("Still switching, please wait. It continues by itself when the new sound is ready.")
+            ui.postDelayed({ setStatus(null) }, 3000)
+            return
+        }
         val s = current ?: return
         val want = when (s.mode) { "music" -> "sam"; "sam" -> "bandit"; "bandit" -> "speech"; else -> "music" }
-        setStatus("Switching to " + (when (want) { "speech" -> "speech only"; "sam" -> "SAM Audio music removal"; "bandit" -> "the better music removal"; else -> "standard music removal" }) + " ...")
+        val label = when (want) { "speech" -> "speech only"; "sam" -> "SAM Audio music removal"; "bandit" -> "the better music removal"; else -> "standard music removal" }
         val host = curHost
         val token = curToken
+        switching = true
+        player?.pause()                                   // the picture waits for the new sound
+        val t0 = System.currentTimeMillis()
+        val ticker = object : Runnable {
+            override fun run() {
+                if (!switching) return
+                setStatus("Switching to " + label + ". Paused until it is ready, please wait ... " + (System.currentTimeMillis() - t0) / 1000 + " s")
+                ui.postDelayed(this, 1000)
+            }
+        }
+        ui.post(ticker)
         Thread {
             try {
-                val answer = httpGet("http://" + host + ":47804/mode?m=" + want + "&t=" + URLEncoder.encode(token, "UTF-8"))
+                val answer = httpGet("http://" + host + ":47804/mode?m=" + want + "&t=" + URLEncoder.encode(token, "UTF-8"), 240000)
+                switching = false
                 if (org.json.JSONObject(answer).optString("mode") != want) {
+                    ui.post { player?.play() }
                     setStatus("The PC could not switch to that mode (is the better model installed there? run setup_pc.py)")
                     ui.postDelayed({ setStatus(null) }, 5000)
                     return@Thread
@@ -313,6 +333,8 @@ class MainActivity : AppCompatActivity() {
                     play(s.copy(mode = want, startSeconds = pos), host, token)
                 }
             } catch (e: Exception) {
+                switching = false
+                ui.post { player?.play() }
                 setStatus("Could not switch the sound: " + (e.message ?: e.javaClass.simpleName))
                 ui.postDelayed({ setStatus(null) }, 4000)
             }

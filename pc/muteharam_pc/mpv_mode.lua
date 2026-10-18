@@ -14,22 +14,41 @@ local nextmode = { music = "sam", sam = "bandit", bandit = "speech", speech = "m
 local busy = false
 
 local function toggle()
-    if busy then return end
+    if busy then
+        mp.osd_message("MuteHaram: still switching, please wait. Playback continues by itself when it is ready.", 4)
+        return
+    end
     busy = true
     local want = nextmode[mode] or "music"
-    mp.osd_message("MuteHaram: switching to " .. names[want] .. " ...", 6)
+    local was_paused = mp.get_property_bool("pause")
+    mp.set_property_bool("pause", true)                 -- the picture waits for the new sound
+    local started = mp.get_time()
+    local ticker = mp.add_periodic_timer(1, function()
+        mp.osd_message(string.format("MuteHaram: switching to
+%s
+Paused until it is ready, please wait ... %d s",
+            names[want], math.floor(mp.get_time() - started)), 2)
+    end)
+    mp.osd_message("MuteHaram: switching to " .. names[want] .. "
+Paused until it is ready, please wait ...", 2)
     mp.command_native_async({
         name = "subprocess", playback_only = false, capture_stdout = true,
-        args = { "curl", "-s", "-m", "30", "http://127.0.0.1:" .. port .. "/mode?m=" .. want },
+        args = { "curl", "-s", "-m", "240", "http://127.0.0.1:" .. port .. "/mode?m=" .. want },
     }, function(ok, res, err)
+        ticker:kill()
         busy = false
         if ok and res and res.status == 0 and (res.stdout or ""):find(want, 1, true) then
             mode = want
             mp.commandv("audio-reload")
-            mp.add_timeout(0.6, function() mp.commandv("seek", "0", "relative+exact") end)
+            mp.add_timeout(0.6, function()
+                mp.commandv("seek", "0", "relative+exact")
+                mp.set_property_bool("pause", was_paused)
+            end)
             mp.osd_message("MuteHaram cleaning: " .. names[mode], 6)
         else
-            mp.osd_message("MuteHaram: could not switch the cleaning (" .. tostring(err or (res and res.status) or "no answer") .. ")", 6)
+            mp.set_property_bool("pause", was_paused)
+            mp.osd_message("MuteHaram: could not switch the cleaning (" .. tostring(err or (res and res.status) or "no answer")
+                .. "). The previous mode is still active.", 6)
         end
     end)
 end

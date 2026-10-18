@@ -141,13 +141,14 @@ class MediaSource:
 # modes that work on overlapping windows blended smoothly: mode -> (window, block length) in seconds
 BLEND = {"bandit": (8.0, 4.0), "sam": (16.0, 12.0)}
 BLEND_HOP = {m: v[1] for m, v in BLEND.items()}
+LEAD_IN_S = 3.0
 
 
 class Session:
     def __init__(self, source, duration=None, window_s=10.0, hop_s=6.0, lookahead_s=150.0,
                  music_gain=1.0, device=None, models_dir=None, log=print,
                  channels_mode="auto", patience_s=45.0, mode="music", start_block=0,
-                 bandit_recipe="plain"):
+                 bandit_recipe="plain", intro_mute_s=0.0):
         assert mode in ("music", "speech", "bandit", "sam")
         if mode in BLEND_HOP:
             window_s, hop_s = BLEND[mode]       # bandit: what that model was built for
@@ -163,6 +164,7 @@ class Session:
         self.margin = (self.win - self.hop) // 2
         self.win = self.hop + 2 * self.margin
         self.bandit_recipe = bandit_recipe
+        self.intro_mute = intro_mute_s if mode == "sam" else 0.0
         self._bprev = None
         if mode in BLEND_HOP:
             # windows overlap by half and are blended smoothly (no hard seams): window b covers [b*hop, b*hop + 2*hop)
@@ -218,6 +220,14 @@ class Session:
                 pass
 
     # ---------------------------------------------------------------- public
+    def prepare(self, timeout=150.0):
+        """Wait until the block the player is at is cleaned (so a mode switch only answers when sound is ready)."""
+        try:
+            self.wait_block(self.want, timeout=timeout)
+            return True
+        except Exception:
+            return False
+
     def wait_block(self, b, timeout=120.0):
         """Block until cleaned block `b` is available (priority-boosting it)."""
         with self.cv:
@@ -302,7 +312,7 @@ class Session:
     def _release_gpu(self):
         if self.mode == "sam":
             from .sam_model import shutdown
-            shutdown()                      # give the graphics card back at once
+            shutdown(self.sam)              # give the graphics card back at once (only OUR worker, never a newer one)
 
     def close(self):
         self._stop = True
@@ -398,7 +408,7 @@ class Session:
         return False
 
     def _window(self, s, e):
-        x = np.zeros((self.win, CHANNELS), np.float32)
+        x = np.zeros((e - s, CHANNELS), np.float32)
         lo = max(s, self._buf_start)
         hi = min(e, self._buf_start + len(self._buf))
         if hi > lo:
@@ -428,16 +438,20 @@ class Session:
                 e = s + self.win
                 bad = True
                 dt = 0.0
-                if self._fill(s, e, max(0, s)):
+                # Where the model starts right here (first block, after a skip or a switch) the first seconds of its
+                # window have no context before them and come out worse: give it a few seconds of lead-in.
+                # At the very end a window of mostly silence is just as bad: use one that ends exactly at the end.
+                ctx = 0
+                if self.mode in BLEND_HOP and s > 0 and (self._bprev is None or self._bprev[0] != b - 1):
+                    ctx = min(int(LEAD_IN_S * SAMPLE_RATE), s)
+                length = e - s + ctx
+                s_eff = s - ctx
+                if self.mode in BLEND_HOP and e > self.total_frames and self.total_frames >= length:
+                    s_eff = self.total_frames - length
+                if self._fill(s_eff, s_eff + length, max(0, s_eff)):
                     t0 = time.time()
                     x = self._window(s, e)
-                    eff = None
-                    if self.mode in BLEND_HOP and e > self.total_frames and s > 0 and self.total_frames >= self.win:
-                        # the last window would be mostly silence (zeros past the end), which the model handles badly:
-                        # clean a full window that ends exactly at the end instead and use its matching part
-                        s2 = self.total_frames - self.win
-                        if self._fill(s2, s2 + self.win, s2):
-                            eff = (s - s2, self._window(s2, s2 + self.win))
+                    eff = (s - s_eff, self._window(s_eff, s_eff + length)) if s_eff != s else None
                     cleaned = self._clean(x, b, eff)
                     if self._stop:
                         return
@@ -496,8 +510,9 @@ class Session:
         rem = self._sam_removal(xr) if self.mode == "sam" else self._bandit_removal(xr)      # for window b
         if eff:                                            # line the shifted window up with window b
             sh = eff[0]
-            al = np.zeros_like(rem)
-            al[:len(rem) - sh] = rem[sh:]
+            al = np.zeros((self.win, CHANNELS), np.float32)
+            m = min(self.win, len(rem) - sh)
+            al[:m] = rem[sh:sh + m]
             rem = al
         prev = self._bprev
         ov = self.win - hop                                # the part of this window that the previous window also covers
@@ -510,6 +525,11 @@ class Session:
             est = rem[:hop]                                # first block after a start or a skip
         self._bprev = (b, rem)
         y = x[:hop] - self.gain * est
+        if b == 0 and self.intro_mute > 0:                 # the first seconds of a film have no context: keep them quiet
+            m = min(hop, int(self.intro_mute * SAMPLE_RATE))
+            fade = min(m, SAMPLE_RATE)
+            y[:m - fade] = 0.0
+            y[m - fade:m] *= (np.arange(fade, dtype=np.float32) / fade)[:, None]
         return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
 
     @torch.no_grad()

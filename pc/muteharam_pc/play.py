@@ -227,7 +227,8 @@ def mode_route(hub):
     def route(q):
         want = (q.get("m") or [""])[0]
         if want in ("music", "bandit", "sam", "speech"):
-            hub.switch(want)               # quick: the networks are already loaded
+            if hub.switch(want) == want:   # answers only when the new mode has its first sound ready (can take a minute)
+                hub.cur.prepare()
         return {"mode": hub.mode}
     return route
 
@@ -394,7 +395,8 @@ def run(argv=None):
         src = MediaSource(rr["media_url"], rr["headers"], cfg["ffmpeg"], cfg["ffprobe"])
         sess = Session(src, duration=rr["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
                        device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
-                       channels_mode=a.channels, mode=a.mode, bandit_recipe=a.bandit_recipe)
+                       channels_mode=a.channels, mode=a.mode, bandit_recipe=a.bandit_recipe,
+                       intro_mute_s=S["sam_intro_mute_s"])
         try:
             ok, why = src.probe(max(0.0, min(a.start, (rr["duration"] or 1e9) - 3)))
             if not ok:
@@ -406,7 +408,8 @@ def run(argv=None):
         sess.remake = lambda m, start_block=0: Session(src, duration=sess.duration, window_s=a.window, hop_s=a.hop,
                                         music_gain=a.gain, device="cpu" if a.cpu else None,
                                         models_dir=cfg["models_dir"], log=log, channels_mode=a.channels, mode=m,
-                                        start_block=start_block, bandit_recipe=a.bandit_recipe)
+                                        start_block=start_block, bandit_recipe=a.bandit_recipe,
+                                        intro_mute_s=S["sam_intro_mute_s"])
         return sess
 
     # Look at every candidate address and try the most promising first: a main ("master") playlist
