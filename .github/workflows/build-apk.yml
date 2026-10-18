@@ -120,7 +120,7 @@ jobs:
 
       - name: Install the PC engine (CPU PyTorch + model weights)
         working-directory: pc
-        run: python setup_pc.py --no-venv --cpu --skip-tools
+        run: python setup_pc.py --no-venv --cpu --skip-tools --no-bandit
 
       - name: Python tests (server + protocol bytes)
         working-directory: pc
