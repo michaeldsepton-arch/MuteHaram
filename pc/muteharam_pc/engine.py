@@ -458,6 +458,7 @@ class Session:
         y = x[:hop] - self.gain * est
         return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
 
+    @torch.no_grad()
     def _clean(self, x, b=None):
         """x: [win, 2] float32 -> cleaned centre [hop, 2] int16."""
         if self.mode == "bandit":
