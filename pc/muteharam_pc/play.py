@@ -330,6 +330,10 @@ def run(argv=None):
     ap.add_argument("--mode", choices=["music", "bandit", "speech"], default=None,
                     help='"music" removes the music; "bandit" removes the music with the better film model (Bandit v2); '
                          '"speech" keeps only voices (also drops sound effects)')
+    ap.add_argument("--bandit-recipe", choices=["plain", "tonal", "full"], default=S["bandit_recipe"],
+                    help="how the better model's result is used: plain = take out its music estimate; "
+                         "tonal = take out only the sustained-tone part of its music+effects estimates (keeps hooves etc.); "
+                         "full = music estimate plus the sustained-tone part of its effects estimate")
     ap.add_argument("--direct", action="store_true",
                     help="the addresses given are video streams (not web pages), whatever they look like")
     ap.add_argument("--pip", action="store_true", default=bool(S["pip"]),
@@ -384,7 +388,7 @@ def run(argv=None):
         src = MediaSource(rr["media_url"], rr["headers"], cfg["ffmpeg"], cfg["ffprobe"])
         sess = Session(src, duration=rr["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
                        device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
-                       channels_mode=a.channels, mode=a.mode)
+                       channels_mode=a.channels, mode=a.mode, bandit_recipe=a.bandit_recipe)
         try:
             ok, why = src.probe(max(0.0, min(a.start, (rr["duration"] or 1e9) - 3)))
             if not ok:
@@ -396,7 +400,7 @@ def run(argv=None):
         sess.remake = lambda m, start_block=0: Session(src, duration=sess.duration, window_s=a.window, hop_s=a.hop,
                                         music_gain=a.gain, device="cpu" if a.cpu else None,
                                         models_dir=cfg["models_dir"], log=log, channels_mode=a.channels, mode=m,
-                                        start_block=start_block)
+                                        start_block=start_block, bandit_recipe=a.bandit_recipe)
         return sess
 
     # Look at every candidate address and try the most promising first: a main ("master") playlist

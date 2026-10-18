@@ -141,7 +141,8 @@ class MediaSource:
 class Session:
     def __init__(self, source, duration=None, window_s=10.0, hop_s=6.0, lookahead_s=150.0,
                  music_gain=1.0, device=None, models_dir=None, log=print,
-                 channels_mode="auto", patience_s=45.0, mode="music", start_block=0):
+                 channels_mode="auto", patience_s=45.0, mode="music", start_block=0,
+                 bandit_recipe="plain"):
         assert mode in ("music", "speech", "bandit")
         if mode == "bandit":
             window_s, hop_s = 8.0, 4.0       # what this model was built for
@@ -156,6 +157,12 @@ class Session:
         self.win = int(round(window_s * SAMPLE_RATE))
         self.margin = (self.win - self.hop) // 2
         self.win = self.hop + 2 * self.margin
+        self.bandit_recipe = bandit_recipe
+        self._bprev = None
+        if mode == "bandit":
+            # windows overlap by half and are blended smoothly (no hard seams): window b covers [b*hop, b*hop + 2*hop)
+            self.margin = 0
+            self.win = 2 * self.hop
         self.nblocks = -(-self.total_frames // self.hop)
         self.lookahead_blocks = max(2, int(lookahead_s / hop_s))
 
@@ -391,7 +398,7 @@ class Session:
                 dt = 0.0
                 if self._fill(s, e, max(0, s)):
                     t0 = time.time()
-                    cleaned = self._clean(self._window(s, e))
+                    cleaned = self._clean(self._window(s, e), b)
                     if self._stop:
                         return
                     self.store[b * self.hop:(b + 1) * self.hop] = cleaned
@@ -421,14 +428,41 @@ class Session:
                 time.sleep(0.5)
 
     @torch.no_grad()
-    def _clean(self, x):
+    def _bandit_removal(self, x):
+        """What to take out of one window [win, 2], according to the recipe."""
+        from .bandit_model import separate
+        from .hpss import harmonic
+        o = separate(self.net, self.device, x, ("music", "sfx"))
+        music, sfx = o["music"], o["sfx"]
+        if self.bandit_recipe == "plain":                  # the model's music estimate
+            return music
+
+        def tonal(a):                                      # the sustained-tone part of an estimate
+            t = torch.from_numpy(np.ascontiguousarray(a.T)).to(self.device)
+            return harmonic(t, margin=1.0).cpu().numpy().T
+        if self.bandit_recipe == "tonal":                  # keep sharp sounds (hooves ...), take out sustained tones
+            return tonal(music) + tonal(sfx)
+        return music + tonal(sfx)                          # "full": music estimate + tonal part of the effects estimate
+
+    def _clean_bandit(self, x, b):
+        hop = self.hop
+        rem = self._bandit_removal(x)                      # for window b
+        prev = self._bprev
+        if prev is not None and prev[0] == b - 1:
+            n = np.arange(hop, dtype=np.float32)
+            up = np.sin(0.5 * np.pi * (n + 0.5) / hop) ** 2          # raised-cosine blend of the two overlapping windows
+            est = prev[1][hop:2 * hop] * (1.0 - up)[:, None] + rem[:hop] * up[:, None]
+        else:
+            est = rem[:hop]                                # first block after a start or a skip
+        self._bprev = (b, rem)
+        y = x[:hop] - self.gain * est
+        return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+    def _clean(self, x, b=None):
         """x: [win, 2] float32 -> cleaned centre [hop, 2] int16."""
-        c = slice(self.margin, self.margin + self.hop)
         if self.mode == "bandit":
-            from .bandit_model import separate
-            music = separate(self.net, self.device, x, ("music",))["music"][c]
-            y = x[c] - self.gain * music
-            return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
+            return self._clean_bandit(x, b)
+        c = slice(self.margin, self.margin + self.hop)
         if self.stereo_sep:
             t = torch.from_numpy(np.ascontiguousarray(x.T)).to(self.device)[:, None, :]   # [2,1,win]
             est = self.net(t)[:, self.target, :].float().cpu().numpy().T[c]               # [hop,2]
