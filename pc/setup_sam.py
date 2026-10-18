@@ -56,6 +56,12 @@ def main():
         run(pip + ["--no-deps", "xformers==0.0.27.post2", "--index-url", idx])
     else:
         run(pip + ["--no-deps", "torchvision", "xformers"])
+    # xformers only has to be importable: its compiled parts do not match this torch and make Windows show an
+    # "entry point not found" box, so they are removed (it then runs without them)
+    site0 = subprocess.check_output([py, "-c", "import sysconfig;print(sysconfig.get_paths()['purelib'])"], text=True).strip()
+    import glob
+    for p in glob.glob(os.path.join(site0, "xformers", "*.pyd")):
+        os.remove(p)
     if not os.path.exists(REPO):
         run(["git", "clone", "--depth", "1", "https://github.com/facebookresearch/sam-audio.git", REPO], check=True)
     base = os.path.join(REPO, "sam_audio", "model", "base.py")
