@@ -328,7 +328,10 @@ class MainActivity : AppCompatActivity() {
         val video = DefaultMediaSourceFactory(dataFactory).createMediaSource(itemBuilder.build())
 
         val audioUrl = "http://" + host + ":47804/audio.wav?t=" + URLEncoder.encode(token, "UTF-8")
-        val audio = ProgressiveMediaSource.Factory(DefaultHttpDataSource.Factory())
+        // the PC may need ~15 s to open the film after a switch or a skip: wait for it instead of giving up
+        val audio = ProgressiveMediaSource.Factory(
+            DefaultHttpDataSource.Factory().setConnectTimeoutMs(15000).setReadTimeoutMs(90000)
+        )
             .createMediaSource(MediaItem.fromUri(audioUrl))
 
         val p = ExoPlayer.Builder(this)

@@ -392,9 +392,10 @@ def run(argv=None):
             sess.close()
             raise
         # switching mode later: the same source, the other network
-        sess.remake = lambda m: Session(src, duration=sess.duration, window_s=a.window, hop_s=a.hop,
+        sess.remake = lambda m, start_block=0: Session(src, duration=sess.duration, window_s=a.window, hop_s=a.hop,
                                         music_gain=a.gain, device="cpu" if a.cpu else None,
-                                        models_dir=cfg["models_dir"], log=log, channels_mode=a.channels, mode=m)
+                                        models_dir=cfg["models_dir"], log=log, channels_mode=a.channels, mode=m,
+                                        start_block=start_block)
         return sess
 
     # Look at every candidate address and try the most promising first: a main ("master") playlist

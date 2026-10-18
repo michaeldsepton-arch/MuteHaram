@@ -141,7 +141,7 @@ class MediaSource:
 class Session:
     def __init__(self, source, duration=None, window_s=10.0, hop_s=6.0, lookahead_s=150.0,
                  music_gain=1.0, device=None, models_dir=None, log=print,
-                 channels_mode="auto", patience_s=15.0, mode="music"):
+                 channels_mode="auto", patience_s=45.0, mode="music", start_block=0):
         assert mode in ("music", "speech", "bandit")
         if mode == "bandit":
             window_s, hop_s = 8.0, 4.0       # what this model was built for
@@ -183,7 +183,7 @@ class Session:
         self.ready = np.zeros(self.nblocks, dtype=bool)
         self.bad = np.zeros(self.nblocks, dtype=bool)     # parts that could not be cleaned -> original audio
         self.cv = threading.Condition()
-        self.want = 0           # block the player most recently asked for
+        self.want = max(0, min(start_block, self.nblocks - 1))   # block the player most recently asked for
         self.error = None
         self._stop = False
         self.thread = threading.Thread(target=self._work, name="engine", daemon=True)
@@ -253,6 +253,18 @@ class Session:
         if raw is not None:
             out[: min(len(raw), self.hop)] = raw[: self.hop]
         return out
+
+    def want_position(self, new_mode):
+        """The block the player is at, in the units of a session running `new_mode` (their hop sizes differ)."""
+        hop_new = int(round((4.0 if new_mode == "bandit" else 6.0) * SAMPLE_RATE))
+        return (self.want * self.hop) // hop_new
+
+    def stop_work(self):
+        """Stop computing (and reading the source) at once, but keep the finished audio readable."""
+        self._stop = True
+        with self.cv:
+            self.cv.notify_all()
+        self._kill_decoder()
 
     def close(self):
         self._stop = True
@@ -329,9 +341,13 @@ class Session:
         network hiccup) is retried a few times instead of being treated as silence."""
         need_end = min(e, self.total_frames)
         for attempt in range(3):
+            if self._stop:
+                return False                 # told to stop: never reopen the source
             if self._dec is None or need_s < self._buf_start or need_s > self._dec_end + SAMPLE_RATE:
                 self._restart(need_s)
             self._read_until(e)
+            if self._stop:
+                return False
             missing = need_end - self._dec_end if need_end > need_s else 0
             if missing <= 2 * SAMPLE_RATE:       # (a small shortfall at the very end is normal)
                 return True
@@ -444,13 +460,18 @@ class SessionHub:
         return self.cur.mode
 
     def read_frames(self, f0, f1):
-        cur = self.cur
-        try:
-            return cur.read_frames(f0, f1)
-        except Exception:
-            if cur is not self.cur:           # swapped while we were reading: ask the new one
-                return self.cur.read_frames(f0, f1)
-            raise
+        for _ in range(4):
+            cur = self.cur
+            try:
+                out = cur.read_frames(f0, f1)
+            except Exception:
+                if cur is self.cur:
+                    raise
+                continue
+            if cur is self.cur:
+                return out
+            # the mode was switched while we were reading: what we got may be from the old mode; ask the new one
+        return self.cur.read_frames(f0, f1)
 
     def switch(self, mode):
         """Start cleaning in `mode`. Returns the mode now active (unchanged on failure)."""
@@ -458,13 +479,15 @@ class SessionHub:
             if mode == self.cur.mode:
                 return self.cur.mode
             try:
-                new = self.remake(mode)
+                new = self.remake(mode, self.cur.want_position(mode))
             except Exception as ex:
                 self.log(f"could not switch to {mode}: {ex!r}")
                 return self.cur.mode
             old, self.cur = self.cur, new
             self.log(f"cleaning mode is now: {mode}")
-            # let requests that are still reading from the old session finish before it is closed
+            # the old session must stop competing for the graphics card and the stream RIGHT NOW; its finished
+            # audio stays readable for a while (requests may still be reading it), then it is closed for good
+            old.stop_work()
             threading.Timer(15.0, old.close).start()
             return mode
 
