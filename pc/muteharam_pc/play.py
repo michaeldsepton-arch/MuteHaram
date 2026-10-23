@@ -17,7 +17,7 @@ import sys
 import time
 
 from . import config
-from .engine import MediaSource, Session
+from .engine import MediaSource, Session, SAMPLE_RATE
 from .server import make_server
 from .engine import SessionHub
 
@@ -249,13 +249,77 @@ def stop_other_tablet_sessions(log):
         log("could not stop the older tablet session:", ex)
 
 
-def run_tablet(a, cfg, r, notes, session, problem, headers, log):
-    """Offer the picture address + the cleaned audio to the tablet app (instead of opening mpv)."""
-    import socket as _socket
+class TabletFront:
+    """What the tablet app talks to from the moment "Send to the tablet" is pressed: until the film is open and its
+    first seconds are cleaned it reports progress ({"preparing": true, "status": ...}); then it serves the session."""
+
+    def __init__(self, log):
+        self.log = log
+        self.t0 = time.time()
+        self.text = "Starting"
+        self.failed = False
+        self.hub = None
+        self.doc = None
+
+    # ---- what the audio server reads (nothing until the session is ready)
+    @property
+    def total_frames(self):
+        return self.hub.total_frames if self.hub else 0
+
+    def read_frames(self, f0, f1):
+        return self.hub.read_frames(f0, f1)
+
+    # ---- progress
+    def stage(self, text):
+        self.text = text
+        self.log(f"[tablet] {text}")
+
+    def fail(self, text):
+        self.failed = True
+        self.stage("Could not prepare the film: " + text)
+
+    def ready(self, hub, doc):
+        self.hub, self.doc = hub, doc
+
+    def session_json(self, q):
+        if self.hub is None:
+            return {"preparing": True, "failed": self.failed, "status": self.text,
+                    "elapsed_s": int(time.time() - self.t0)}
+        return dict(self.doc, mode=self.hub.mode, age_s=int(time.time() - self.doc["id"] / 1000))
+
+    def mode(self, q):
+        if self.hub is None:
+            return {"mode": ""}
+        return mode_route(self.hub)(q)
+
+
+def start_tablet_front(a, log):
+    """Stop older tablet sessions and answer the tablet at once with progress messages."""
     from .stream_server import load_or_create_token, lan_addresses
+    stop_other_tablet_sessions(log)
+    front = TabletFront(log)
+    srv = None
+    for attempt in range(10):                   # the port of a session that was just stopped may need a moment
+        try:
+            srv = make_server(front, host="0.0.0.0", port=a.tablet_port, token=load_or_create_token(),
+                              routes={"/session.json": front.session_json, "/mode": front.mode})
+            break
+        except OSError:
+            if attempt == 9:
+                raise SystemExit(f"Port {a.tablet_port} is in use by another program; close other MuteHaram windows.")
+            time.sleep(1.0)
+    log("In the MuteHaram tablet app use one of these addresses:", ", ".join(lan_addresses()) or "(this computer's address)")
+    return front, srv
+
+
+def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
+    """Offer the picture address + the cleaned audio to the tablet app (instead of opening mpv)."""
     if session is None:
+        front.fail("the music could not be removed (details on the PC)")
+        time.sleep(20)                          # let the tablet show the message
+        srv.shutdown()
         raise SystemExit("The music could not be removed, so nothing is sent to the tablet: " + str(problem))
-    token = load_or_create_token()
+    front.stage("Finding the picture and the captions")
     title = None
     if is_direct(a.url):
         video, vheaders, subs = r["mpv_url"], dict(r["headers"] or {}), [{"url": u, "lang": ""} for u in a.sub]
@@ -279,15 +343,16 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log):
             log(f"skipping a caption file that does not load ({st}): {u[:100]}")
     subs = good
     hub = SessionHub(session, session.remake)
+    # the film only starts on the tablet once its first seconds are cleaned: no original sound (music) at the start
+    front.stage("Cleaning the first seconds of sound")
+    if not session.prepare(at_frame=int(max(0.0, a.start) * SAMPLE_RATE), timeout=240):
+        log("[tablet] the first seconds are taking long; starting anyway")
     doc = {"id": int(time.time() * 1000), "title": title or "", "video": video, "kind": kind,
            "headers": clean_headers(vheaders),
            "subs": subs, "start": max(0.0, a.start), "duration": session.duration}
-    stop_other_tablet_sessions(log)
-    srv = make_server(hub, host="0.0.0.0", port=a.tablet_port, token=token,
-                      routes={"/session.json": lambda q: dict(doc, mode=hub.mode, age_s=int(time.time() - doc["id"] / 1000)),
-                              "/mode": mode_route(hub)})
-    log(f"tablet session ready: {kind} picture, cleaned audio on port {a.tablet_port}")
-    log("In the MuteHaram tablet app use one of these addresses:", ", ".join(lan_addresses()) or "(this computer's address)")
+    front.ready(hub, doc)
+    log(f"tablet session ready: {kind} picture, cleaned audio on port {a.tablet_port} "
+        f"({int(time.time() - front.t0)} s after pressing Send)")
     log("Waiting for the tablet. (This window closes after 30 minutes without the tablet asking.)")
     try:
         while time.time() - srv.last_request < 1800 or time.time() - doc["id"] / 1000 < 120:
@@ -385,6 +450,19 @@ def run(argv=None):
     if a.user_agent:
         headers["User-Agent"] = a.user_agent
 
+    if a.mode == "sam":
+        # start loading SAM Audio (about 30 s) right away, while the film's addresses are being looked at
+        def warm():
+            try:
+                from .sam_model import get_client
+                get_client(log)
+            except Exception as ex:
+                log(f"SAM Audio could not be loaded early: {ex!r}")
+        threading.Thread(target=warm, name="sam-warmup", daemon=True).start()
+    front = tablet_srv = None
+    if a.tablet:
+        front, tablet_srv = start_tablet_front(a, log)
+        front.stage("Opening the film on the PC")
     r = resolve(a.url, headers, cfg, log, a.sub_langs)
     session = srv = None
     problem = None
@@ -444,6 +522,9 @@ def run(argv=None):
     if a.page and is_direct(a.url):
         attempts.append(("the web page (yt-dlp)", lambda: resolve(a.page, headers, cfg, log, a.sub_langs)))
     errors = []
+    if front:
+        front.stage("Loading SAM Audio and opening the sound (about a minute)" if a.mode == "sam"
+                    else "Loading the cleaning model and opening the sound")
     for label, make in attempts:
         try:
             session = build(make())
@@ -469,7 +550,7 @@ def run(argv=None):
             log("the address picked for the picture looked audio-only; showing", pick[:100], "instead")
             r["mpv_url"] = pick
     if a.tablet:
-        return run_tablet(a, cfg, r, notes, session, problem, headers, log)
+        return run_tablet(a, cfg, r, notes, session, problem, headers, log, front, tablet_srv)
     if session is not None:
         hub = SessionHub(session, session.remake)
         session = hub                      # closing later closes whichever session is current
@@ -502,6 +583,8 @@ def run(argv=None):
             # a YouTube link was resolved as video-only for our audio track: ask for sound again
             r["mpv_args"] = [x for x in r["mpv_args"] if not x.startswith("--ytdl-format")]
     cmd += [f"--script={os.path.join(HERE, 'mpv_pip.lua')}"]
+    if S["ontop"] and not a.pip:
+        cmd += ["--ontop"]                 # stays in front of other programs (press T in the player to turn it off)
     if a.pip:
         # Opens small, frameless, always on top, bottom-right of the screen.
         cmd += ["--script-opts=muteharam-pip=yes", "--ontop", "--no-border", "--autofit=25%",

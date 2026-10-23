@@ -55,6 +55,27 @@ def main():
     got = np.frombuffer(body, dtype="<i2")
     assert code == 206 and list(got) == [0, 0, 1, -1], list(got)
     s.shutdown()
+
+    # progress while the PC is still preparing: session.json says so, the audio is "not ready" (503), then it serves
+    from muteharam_pc.play import TabletFront
+
+    class FakeHub(FakeSession):
+        mode = "sam"
+    front = TabletFront(lambda *m: None)
+    s = srv.make_server(front, host="127.0.0.1", port=0, token="tok",
+                        routes={"/session.json": front.session_json, "/mode": front.mode})
+    base = f"http://127.0.0.1:{s.server_address[1]}"
+    front.stage("Loading SAM Audio")
+    code, body, _ = get(base + "/session.json?t=tok")
+    j = json.loads(body)
+    assert code == 200 and j["preparing"] and j["status"] == "Loading SAM Audio" and "video" not in j, j
+    assert get(base + "/audio.wav?t=tok", {"Range": "bytes=0-43"})[0] == 503
+    front.ready(FakeHub(), dict(doc, id=int(__import__("time").time() * 1000)))
+    j = json.loads(get(base + "/session.json?t=tok")[1])
+    assert j["video"] == doc["video"] and j["mode"] == "sam" and "preparing" not in j, j
+    code, body, _ = get(base + "/audio.wav?t=tok", {"Range": "bytes=0-43"})
+    assert code == 206 and body[:4] == b"RIFF"
+    s.shutdown()
     print("TABLET SERVER TEST OK")
 
 

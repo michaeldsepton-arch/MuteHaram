@@ -1,12 +1,12 @@
 """
-The engine must never turn trouble into silence.
+The engine must not turn passing trouble into silence, and must never let the music through.
 
     python tests/test_engine_robustness.py
 
 1. A source that stops early once in the middle (a network hiccup) is retried and the
    audio of that part is still produced.
-2. A part of the source that can NEVER be decoded is played as the original audio
-   (read separately), not as silence.
+2. A part of the source that can NEVER be decoded is silent by default (never the music), or the original
+   audio (read separately) with fallback="original".
 3. Normal and "speech" modes both run.
 """
 import os
@@ -38,7 +38,7 @@ class Flaky(MediaSource):
         self.region_never = region_never    # (from_s, to_s) where decoding always breaks
         self.starts = []
 
-    def decoder(self, start_seconds):
+    def decoder(self, start_seconds, log=None):
         self.starts.append(start_seconds)
         if self.region_never:
             broken = self.region_never[0] <= start_seconds < self.region_never[1]
@@ -52,7 +52,7 @@ class Flaky(MediaSource):
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
             p.err_tail = []
             return p
-        return super().decoder(start_seconds)
+        return super().decoder(start_seconds, log)
 
 
 def rms(a):
@@ -82,9 +82,17 @@ assert diff < 400, "after a hiccup the audio must match a normal run (not silenc
 assert int(s.bad.sum()) == 0, "a single hiccup should be recovered by the retry"
 s.close()
 
-# 2. a region that can never be read -> the ORIGINAL audio, not silence
+# 2a. a region that can never be read -> silence by default (the music must never come through)
 src = Flaky(wav, ffmpeg=cfg["ffmpeg"], ffprobe=cfg["ffprobe"], fails=0, region_never=(10.0, 40.0))
 s = make(src)
+audio = s.read_frames(18 * SAMPLE_RATE, 24 * SAMPLE_RATE)
+print("unreadable-part test (default): rms =", round(rms(audio), 5), "| fallbacks:", s.fallbacks)
+assert rms(audio) < 1e-4 and s.fallbacks >= 1
+s.close()
+
+# 2b. the same with fallback="original" -> the ORIGINAL audio, not silence
+src = Flaky(wav, ffmpeg=cfg["ffmpeg"], ffprobe=cfg["ffprobe"], fails=0, region_never=(10.0, 40.0))
+s = make(src, fallback="original")
 audio = s.read_frames(18 * SAMPLE_RATE, 24 * SAMPLE_RATE)
 orig = MediaSource(wav, ffmpeg=cfg["ffmpeg"], ffprobe=cfg["ffprobe"]).read_s16(18.0, 6.0)[: len(audio)]
 diff = int(np.abs(audio[: len(orig)].astype(np.int32) - orig.astype(np.int32)).max())

@@ -30,8 +30,10 @@ def wav_header(frames):
 def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
     """token: if set, every request must carry it (?t=... or header X-MuteHaram-Token).
     routes: {"/session.json": callable(query) -> dict} extra JSON documents / actions (tablet mode, mode switch)."""
-    total = HEADER_LEN + session.total_frames * BYTES_PER_FRAME
-    header = wav_header(session.total_frames)
+    # the length is looked up per request: in tablet mode the server starts (to show progress) before the film is open
+    def sizes():
+        n = session.total_frames
+        return HEADER_LEN + n * BYTES_PER_FRAME, wav_header(n)
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -39,7 +41,7 @@ def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
         def log_message(self, *a):
             pass
 
-        def _range(self):
+        def _range(self, total):
             m = re.match(r"bytes=(\d*)-(\d*)", self.headers.get("Range", ""))
             if not m:
                 return 0, total - 1, False
@@ -51,7 +53,7 @@ def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
                 end = int(b) if b else total - 1
             return start, min(end, total - 1), True
 
-        def _head(self, start, end, partial):
+        def _head(self, start, end, partial, total):
             self.send_response(206 if partial else 200)
             self.send_header("Content-Type", "audio/wav")
             self.send_header("Accept-Ranges", "bytes")
@@ -65,7 +67,11 @@ def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
             if not self._authorised():
                 self.send_error(401)
                 return
-            self._head(0, total - 1, False)
+            total, _ = sizes()
+            if total <= HEADER_LEN:
+                self.send_error(503, "not ready yet")
+                return
+            self._head(0, total - 1, False, total)
 
         def _authorised(self):
             if not token:
@@ -92,11 +98,15 @@ def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
             if path != "/audio.wav":
                 self.send_error(404)
                 return
-            start, end, partial = self._range()
+            total, header = sizes()
+            if total <= HEADER_LEN:
+                self.send_error(503, "not ready yet")
+                return
+            start, end, partial = self._range(total)
             if start >= total:
                 self.send_error(416)
                 return
-            self._head(start, end, partial)
+            self._head(start, end, partial, total)
             try:
                 pos = start
                 if pos < HEADER_LEN:

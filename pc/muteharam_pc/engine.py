@@ -103,6 +103,7 @@ class MediaSource:
         for attempt in range(2):
             cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *self._http_args(),
                    "-ss", f"{max(0.0, start_seconds):.3f}", "-t", f"{seconds:.3f}", "-i", self.url, "-vn",
+                   "-af", "aresample=async=1:first_pts=0",
                    "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "s16le", "pipe:1"]
             res = subprocess.run(cmd, capture_output=True, timeout=120)
             out = res.stdout
@@ -123,16 +124,25 @@ class MediaSource:
         except Exception as ex:
             return False, str(ex)
 
-    def decoder(self, start_seconds):
-        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *self._http_args(),
+    def decoder(self, start_seconds, log=None):
+        # aresample async: the sound follows the stream's own clock. Without it a missing or broken piece of the
+        # stream (it happens on long films) is simply left out, and from then on the sound runs AHEAD of the
+        # picture by that much, until the next skip.
+        cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin", *self._http_args(),
                "-ss", f"{max(0.0, start_seconds):.3f}", "-i", self.url, "-vn",
+               "-af", "aresample=async=1:first_pts=0",
                "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "f32le", "pipe:1"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
         proc.err_tail = []
+        shown = [0]
 
         def drain():
             for line in proc.stderr:
-                proc.err_tail = (proc.err_tail + [line.decode("utf-8", "replace").strip()])[-5:]
+                text = line.decode("utf-8", "replace").strip()
+                proc.err_tail = (proc.err_tail + [text])[-5:]
+                if log and shown[0] < 20 and any(k in text.lower() for k in ("segment", "skip", "discontinu", "non-monoton", "failed")):
+                    shown[0] += 1
+                    log("source: " + text[:200])
 
         threading.Thread(target=drain, daemon=True).start()
         return proc
@@ -148,7 +158,7 @@ class Session:
     def __init__(self, source, duration=None, window_s=10.0, hop_s=6.0, lookahead_s=150.0,
                  music_gain=1.0, device=None, models_dir=None, log=print,
                  channels_mode="auto", patience_s=45.0, mode="music", start_block=0,
-                 bandit_recipe="plain", intro_mute_s=0.0):
+                 bandit_recipe="plain", intro_mute_s=0.0, fallback="silence"):
         assert mode in ("music", "speech", "bandit", "sam")
         if mode in BLEND_HOP:
             window_s, hop_s = BLEND[mode]       # bandit: what that model was built for
@@ -190,6 +200,7 @@ class Session:
         # "mono": run it once on the mix. auto = stereo when a GPU is available.
         self.stereo_sep = channels_mode == "stereo" or (channels_mode == "auto" and self.device.type == "cuda")
         self.patience = patience_s
+        self.fallback = fallback
         self.fallbacks = 0
         self.log(f"engine: {self.duration:.0f}s of audio, window {window_s:g}s / hop {hop_s:g}s on {self.device}, "
                  f"{'separate L/R' if self.stereo_sep else 'mono mix'} processing, mode {mode}")
@@ -220,10 +231,12 @@ class Session:
                 pass
 
     # ---------------------------------------------------------------- public
-    def prepare(self, timeout=150.0):
-        """Wait until the block the player is at is cleaned (so a mode switch only answers when sound is ready)."""
+    def prepare(self, timeout=150.0, at_frame=None):
+        """Wait until the block the player is at (or the one holding `at_frame`) is cleaned, so playback only
+        starts / a mode switch only answers when the sound is ready."""
+        b = self.want if at_frame is None else max(0, min(at_frame // self.hop, self.nblocks - 1))
         try:
-            self.wait_block(self.want, timeout=timeout)
+            self.wait_block(b, timeout=timeout)
             return True
         except Exception:
             return False
@@ -243,9 +256,9 @@ class Session:
         return self.store[b * self.hop:(b + 1) * self.hop]
 
     def read_frames(self, f0, f1):
-        """Cleaned int16 stereo frames [f0, f1). If the AI can't deliver in time
-        (slow computer, network trouble, engine error) the ORIGINAL audio for that
-        stretch is returned instead, so playback never freezes or goes silent."""
+        """Cleaned int16 stereo frames [f0, f1). If the AI can't deliver in time (slow computer, network trouble,
+        engine error) that stretch is SILENT (fallback="silence", the default: never let the music through) or the
+        ORIGINAL audio (fallback="original"), so playback never freezes."""
         f1 = min(f1, self.total_frames)
         out = []
         f = f0
@@ -265,6 +278,9 @@ class Session:
 
     def _raw_block(self, b, why):
         self.fallbacks += 1
+        if self.fallback != "original":
+            self.log(f"block {b + 1}: SILENT, it is not cleaned yet ({why})")
+            return np.zeros((self.hop, CHANNELS), np.int16)
         self.log(f"block {b + 1}: using the ORIGINAL audio ({why})")
         raw = None
         for attempt in range(3):
@@ -364,7 +380,7 @@ class Session:
 
     def _restart(self, need_s):
         self._kill_decoder()
-        self._dec = self.src.decoder(need_s / SAMPLE_RATE)
+        self._dec = self.src.decoder(need_s / SAMPLE_RATE, self.log)
         self._buf = np.zeros((0, CHANNELS), np.float32)
         self._buf_start = self._dec_end = need_s
         self._eof = False

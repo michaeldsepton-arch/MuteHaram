@@ -68,6 +68,26 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile
     private var running = false
+
+    // where the film was, so that after a playback problem it carries on from there (not from the beginning)
+    @Volatile
+    private var resumeId = -1L
+
+    @Volatile
+    private var resumeMs = 0L
+    private var autoRetries = 0
+    private var lastRetryAt = 0L
+    private val remember = object : Runnable {
+        override fun run() {
+            val p = player
+            val s = current
+            if (p != null && s != null && p.playbackState == Player.STATE_READY) {
+                resumeId = s.id
+                resumeMs = p.currentPosition
+            }
+            ui.postDelayed(this, 2000)
+        }
+    }
     private val ui = Handler(Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("mh", MODE_PRIVATE) }
 
@@ -152,6 +172,8 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         running = true
+        ui.removeCallbacks(remember)
+        ui.post(remember)
         Thread { pollLoop() }.apply { isDaemon = true; start() }
     }
 
@@ -238,8 +260,28 @@ class MainActivity : AppCompatActivity() {
             } else {
                 try {
                     val url = "http://" + host + ":47804/session.json?t=" + URLEncoder.encode(tok, "UTF-8")
-                    val s = SessionInfo.parse(httpGet(url))
-                    if (s.id != currentId) {
+                    val text = httpGet(url)
+                    val j = org.json.JSONObject(text)
+                    if (j.optBoolean("preparing")) {
+                        // "Send to the tablet" was pressed: the PC opens the film and cleans its first seconds
+                        if (player == null || player?.isPlaying != true) {
+                            setStatus(
+                                if (j.optBoolean("failed")) j.optString("status") + "\n(details in the window on the PC)"
+                                else "The PC is preparing the film ... " + j.optLong("elapsed_s") + " s\n" +
+                                    j.optString("status") + "\n(this usually takes 1 to 2 minutes; it starts by itself)"
+                            )
+                        }
+                        Thread.sleep(1000)
+                        continue
+                    }
+                    val s = SessionInfo.parse(text)
+                    if (s.id == resumeId && resumeMs > 0 && s.id != currentId) {
+                        // the same film again after a problem: carry on where it was, never from the beginning
+                        pendingOld = null
+                        currentId = s.id
+                        val pos = resumeMs / 1000.0
+                        ui.post { play(s.copy(startSeconds = pos), host, tok) }
+                    } else if (s.id != currentId) {
                         if (s.ageSeconds > 180 && s.id != acceptedOldId) {
                             pendingOld = s
                             if (player == null) {
@@ -259,10 +301,14 @@ class MainActivity : AppCompatActivity() {
                     }
                 } catch (e: Exception) {
                     if (player == null || player?.isPlaying != true) {
+                        val why = when (e) {
+                            is java.net.ConnectException, is java.net.SocketTimeoutException ->
+                                "Nothing has been sent from the PC yet (or the PC is not on this Wi-Fi)."
+                            else -> e.message ?: e.javaClass.simpleName
+                        }
                         setStatus(
                             "Waiting for the PC (" + host + ")\n" +
-                                "On the PC: open the video, then use the MuteHaram icon's menu: Send to the tablet.\n" +
-                                (e.message ?: "")
+                                "On the PC: open the video, then use the MuteHaram icon's menu: Send to the tablet.\n" + why
                         )
                     }
                 }
@@ -390,7 +436,21 @@ class MainActivity : AppCompatActivity() {
                     ui.post { play(s, host, token, false) }
                     return
                 }
-                currentId = -1L        // the next poll offers the same session again; tapping the message retries
+                // carry on from where it was, never from the beginning: a few automatic retries, then ask
+                val pos = maxOf(p.currentPosition, if (resumeId == s.id) resumeMs else 0L)
+                resumeId = s.id
+                resumeMs = pos
+                val now = System.currentTimeMillis()
+                if (now - lastRetryAt > 120_000) autoRetries = 0
+                if (autoRetries < 3) {
+                    autoRetries++
+                    lastRetryAt = now
+                    android.util.Log.w("MuteHaramPlayer", "playback problem; retry " + autoRetries + " from " + pos / 1000 + " s", error)
+                    setStatus("Playback hiccup, carrying on from " + (pos / 60000) + ":" + String.format("%02d", (pos / 1000) % 60) + " ...")
+                    ui.postDelayed({ if (player === p) play(s.copy(startSeconds = pos / 1000.0), host, token, withSubs) }, 2000)
+                    return
+                }
+                currentId = -1L        // the next poll offers the same session again (from where it was); tapping retries
                 var why = ""
                 var c: Throwable? = error.cause
                 var depth = 0
@@ -420,6 +480,11 @@ class MainActivity : AppCompatActivity() {
                 else if (state == Player.STATE_BUFFERING) setStatus("Loading ...")
             }
         })
+        // pick the PC's cleaned sound from the very first moment (otherwise the film's own sound, WITH the music,
+        // can play for a few seconds until the choice below switches over)
+        p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
+            .setPreferredAudioMimeType(MimeTypes.AUDIO_RAW)
+            .build()
         p.setMediaSource(MergingMediaSource(video, audio), (s.startSeconds * 1000).toLong())
         p.prepare()
         p.playWhenReady = true
