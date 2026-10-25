@@ -365,6 +365,7 @@ class MainActivity : AppCompatActivity() {
     private fun showMode(mode: String) {
         modeButton.text = when (mode) {
             "speech" -> "Sound: SPEECH ONLY  (tap: next mode)"
+            "precleaned" -> "Sound: CLEANED IN ADVANCE on the PC (library)"
             "sam" -> "Sound: MUSIC REMOVED, SAM Audio (best)  (tap: next mode)"
             "bandit" -> "Sound: MUSIC REMOVED, better model  (tap: next mode)"
             else -> "Sound: MUSIC REMOVED, standard  (tap: next mode)"
@@ -389,6 +390,11 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val s = current ?: return
+        if (s.mode == "precleaned") {
+            setStatus("This film was cleaned in advance in the library, so its sound can't be switched here.")
+            ui.postDelayed({ setStatus(null) }, 4000)
+            return
+        }
         val want = when (s.mode) { "music" -> "sam"; "sam" -> "bandit"; "bandit" -> "speech"; else -> "music" }
         val label = when (want) { "speech" -> "speech only"; "sam" -> "SAM Audio music removal"; "bandit" -> "the better music removal"; else -> "standard music removal" }
         val host = curHost

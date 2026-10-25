@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MuteHaram Library</title>
+<style>
+  :root {
+    --bg: #111418; --panel: #1a1f25; --line: #2a313a; --text: #e8ecf1; --dim: #9aa5b1;
+    --accent: #3fb27f; --accent-ink: #06210f; --warn: #e0a43a; --bad: #e5675e; --blue: #5aa0e6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 "Segoe UI", system-ui, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 18px 24px; border-bottom: 1px solid var(--line);
+           position: sticky; top: 0; background: var(--bg); z-index: 2; flex-wrap: wrap; }
+  h1 { font-size: 20px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  #state { color: var(--dim); flex: 1; min-width: 220px; }
+  #state b { color: var(--text); font-weight: 600; }
+  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+           border-radius: 8px; padding: 7px 14px; cursor: pointer; }
+  button:hover { border-color: #46515e; }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button.stop { background: #3a2422; border-color: #6b3934; color: #ffd9d5; font-weight: 600; }
+  button.small { padding: 4px 9px; font-size: 13px; }
+  button:disabled { opacity: .4; cursor: default; }
+  main { padding: 8px 24px 40px; max-width: 1100px; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); font-weight: 600; margin: 26px 0 10px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .title { font-weight: 600; word-break: break-word; }
+  .meta { color: var(--dim); font-size: 13px; margin: 3px 0 10px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  td.n { color: var(--dim); width: 28px; text-align: right; }
+  td.act { white-space: nowrap; text-align: right; width: 1%; }
+  .bar { height: 6px; background: #252c34; border-radius: 3px; overflow: hidden; margin-top: 6px; max-width: 420px; }
+  .bar > i { display: block; height: 100%; background: var(--blue); width: 0; transition: width .6s; }
+  .st { font-size: 13px; color: var(--dim); }
+  .st.processing { color: var(--blue); } .st.error { color: var(--bad); } .st.paused { color: var(--warn); }
+  .empty { color: var(--dim); background: var(--panel); border: 1px dashed var(--line); border-radius: 12px; padding: 16px; }
+  .help { color: var(--dim); font-size: 13px; }
+  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #26303a; color: var(--text);
+           padding: 10px 16px; border-radius: 8px; border: 1px solid var(--line); opacity: 0; transition: opacity .3s; pointer-events: none; }
+  #toast.show { opacity: 1; }
+  #offline { display: none; background: #3a2422; color: #ffd9d5; padding: 10px 24px; }
+</style>
+</head>
+<body>
+<div id="offline">The MuteHaram helper is not running. Start it with <b>start_helper.bat</b> (in the MuteHaram pc folder); this window reconnects by itself.</div>
+<header>
+  <h1>MuteHaram Library</h1>
+  <div id="state">Loading ...</div>
+  <button id="toggle" class="primary">Start cleaning</button>
+</header>
+<main>
+  <h2>Ready to watch</h2>
+  <div id="ready" class="grid"></div>
+  <h2>Queue (cleaned in this order, only while cleaning is started)</h2>
+  <div id="queue"></div>
+  <p class="help">To add a film or video: open it in Chrome, start it playing for a moment, then right-click the
+    MuteHaram icon and choose <b>Add to the MuteHaram library (clean in advance)</b>. Only the cleaned sound is kept
+    (about 70 MB per hour); the picture comes from the website when you watch.</p>
+</main>
+<div id="toast"></div>
+<script>
+"use strict";
+let data = { items: [], runner: { running: false } };
+
+async function api(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-MuteHaram": "1" },
+                                body: JSON.stringify(body || {}) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("error " + r.status));
+  return j;
+}
+function toast(t) {
+  const el = document.getElementById("toast");
+  el.textContent = t; el.classList.add("show");
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("show"), 3500);
+}
+function fmt(s) {
+  if (s == null || !isFinite(s)) return "";
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  return h ? `${h} h ${m} min` : (m ? `${m} min` : `${s} s`);
+}
+function el(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === "onclick") e.addEventListener("click", v);
+    else if (k === "class") e.className = v;
+    else e.setAttribute(k, v);
+  }
+  for (const k of kids) e.append(k);
+  return e;
+}
+function btn(text, fn, cls) {
+  return el("button", { class: "small " + (cls || ""), onclick: async (ev) => {
+    ev.currentTarget.disabled = true;
+    try { await fn(); } catch (e) { toast("Problem: " + e.message); }
+    refresh();
+  } }, text);
+}
+
+function render() {
+  const run = data.runner || {};
+  const items = data.items || [];
+  const cur = items.find((x) => x.id === run.current);
+  const st = document.getElementById("state");
+  const waiting = items.filter((x) => x.status !== "ready" && x.status !== "error").length;
+  if (run.running && cur) {
+    st.innerHTML = "";
+    st.append("Cleaning ", el("b", {}, cur.title || "(untitled)"), ` — ${Math.round(cur.progress * 100)} %` +
+              (cur.eta_s ? `, about ${fmt(cur.eta_s)} left` : "") + ". The graphics card is in use.");
+  } else if (run.running) {
+    st.textContent = "Starting ...";
+  } else {
+    st.textContent = waiting ? `Stopped. ${waiting} waiting in the queue. The graphics card is free.`
+                             : "Nothing waiting. The graphics card is free.";
+  }
+  const t = document.getElementById("toggle");
+  t.textContent = run.running ? "Stop cleaning" : "Start cleaning";
+  t.className = run.running ? "stop" : "primary";
+  t.disabled = !run.running && !waiting;
+
+  const ready = items.filter((x) => x.status === "ready");
+  const rbox = document.getElementById("ready");
+  rbox.innerHTML = "";
+  if (!ready.length) rbox.append(el("div", { class: "empty" }, "Nothing ready yet."));
+  for (const x of ready) {
+    rbox.append(el("div", { class: "card" },
+      el("div", { class: "title" }, x.title || "(untitled)"),
+      el("div", { class: "meta" }, [fmt(x.duration), x.size_mb ? `${x.size_mb} MB` : "",
+                                    x.unclean_s ? `${fmt(x.unclean_s)} could not be cleaned (silent)` : ""].filter(Boolean).join(" · ")),
+      el("div", { class: "row" },
+        btn("▶ Watch on this PC", async () => { await api("/api/play", { id: x.id }); toast("Opening the player ..."); }, "primary"),
+        btn("Send to tablet", async () => { await api("/api/play", { id: x.id, tablet: true }); toast("Open the MuteHaram app on the tablet"); }),
+        btn("Remove", async () => { if (confirm(`Remove "${x.title}" and its cleaned sound?`)) await api("/api/remove", { id: x.id }); }))));
+  }
+
+  const q = items.filter((x) => x.status !== "ready");
+  const qbox = document.getElementById("queue");
+  qbox.innerHTML = "";
+  if (!q.length) { qbox.append(el("div", { class: "empty" }, "The queue is empty.")); return; }
+  const tb = el("table", {});
+  q.forEach((x, i) => {
+    let label = "Waiting";
+    if (x.status === "processing") label = `Cleaning ${Math.round(x.progress * 100)} %` + (x.eta_s ? ` · about ${fmt(x.eta_s)} left` : "");
+    else if (x.status === "paused" || (x.status === "queued" && x.progress > 0)) label = `Stopped at ${Math.round(x.progress * 100)} % (carries on when started)`;
+    else if (x.status === "error") label = "Problem: " + (x.error || "unknown");
+    const cell = el("td", {}, el("div", { class: "title" }, x.title || "(untitled)"),
+                    el("div", { class: "st " + x.status }, label));
+    if (x.progress > 0 || x.status === "processing") {
+      const bar = el("div", { class: "bar" }, el("i", {}));
+      bar.firstChild.style.width = (x.progress * 100).toFixed(1) + "%";
+      cell.append(bar);
+    }
+    const acts = el("td", { class: "act" },
+      btn("▲", () => api("/api/move", { id: x.id, delta: -1 })),
+      " ", btn("▼", () => api("/api/move", { id: x.id, delta: 1 })),
+      " ");
+    if (x.status === "error") acts.append(btn("Try again", () => api("/api/retry", { id: x.id })), " ");
+    acts.append(btn("Remove", async () => { if (confirm(`Remove "${x.title}" from the queue?`)) await api("/api/remove", { id: x.id }); }));
+    tb.append(el("tr", {}, el("td", { class: "n" }, String(i + 1)), cell, acts));
+  });
+  qbox.append(tb);
+}
+
+async function refresh() {
+  try {
+    const r = await fetch("/api/library", { cache: "no-store" });
+    data = await r.json();
+    document.getElementById("offline").style.display = "none";
+    render();
+  } catch (e) {
+    document.getElementById("offline").style.display = "block";
+  }
+}
+document.getElementById("toggle").addEventListener("click", async () => {
+  try {
+    await api(data.runner && data.runner.running ? "/api/stop" : "/api/start");
+  } catch (e) { toast("Problem: " + e.message); }
+  refresh();
+});
+refresh();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

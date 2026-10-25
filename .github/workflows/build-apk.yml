@@ -128,6 +128,8 @@ jobs:
           python tests/test_protocol_golden.py
           python tests/test_stream_server.py
           python tests/test_tablet_server.py
+          python tests/test_library.py
+          python tests/test_source_gap.py
 
       - name: Start the Wi-Fi server
         working-directory: pc

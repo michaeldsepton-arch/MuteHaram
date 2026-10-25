@@ -46,6 +46,7 @@ DEFAULT_SETTINGS = {
     "channels": "auto",       # auto | mono | stereo
     "sub_langs": "en.*,ar.*", # YouTube caption languages to load (yt-dlp style, "all" for everything)
     "pip": False,             # always start in the small corner window
+    "preclean_mode": "sam",   # which cleaning the library uses for films cleaned in advance
     "ontop": True,            # the player window stays above other windows (also when you click another program); T toggles
 }
 

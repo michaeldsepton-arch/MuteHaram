@@ -187,6 +187,12 @@ try {
       id: "muteharam-tablet", title: "Send to the tablet (MuteHaram tablet app)", contexts: ["action"],
     });
     chrome.contextMenus.create({
+      id: "muteharam-queue", title: "Add to the MuteHaram library (clean in advance, watch later)", contexts: ["action"],
+    });
+    chrome.contextMenus.create({
+      id: "muteharam-library", title: "Open the MuteHaram library", contexts: ["action"],
+    });
+    chrome.contextMenus.create({
       id: "muteharam-live", title: "Clean the sound inside this page (live, about 3 s late)", contexts: ["action"],
     });
   });
@@ -198,6 +204,8 @@ try {
     if (info.menuItemId === "muteharam-pip" && tab) openInPlayer(tab, true);
     if (info.menuItemId === "muteharam-live" && tab) startLive(tab);
     if (info.menuItemId === "muteharam-tablet" && tab) openInPlayer(tab, false, true);
+    if (info.menuItemId === "muteharam-queue" && tab) openInPlayer(tab, false, false, true);
+    if (info.menuItemId === "muteharam-library") chrome.tabs.create({ url: "http://127.0.0.1:47800/library" });
   });
 } catch (e) { /* contextMenus not available: normal click still works */ }
 
@@ -245,7 +253,7 @@ async function startLive(tab) {
   }
 }
 
-async function openInPlayer(tab, pip, tablet) {
+async function openInPlayer(tab, pip, tablet, queue) {
   await stateReady;
   const start = await pagePosition(tab.id);
   let payload;
@@ -272,6 +280,19 @@ async function openInPlayer(tab, pip, tablet) {
         "No video stream seen on this page. Make sure the video is playing, then click again. " +
         "A report of what the page loaded was saved in the pc/logs folder (extension-debug-*.txt).");
     }
+  }
+  if (queue) {
+    // the library keeps only the cleaned sound; the film is played later from the library window
+    payload.title = payload.title || tab.title;
+    delete payload.start; delete payload.pip;
+    try {
+      const r = await post("/queue/add", payload);
+      if (!r.ok) throw new Error("helper said " + r.status);
+      badge(tab.id, "+Q", "#1a7f37", "Added to the MuteHaram library. Open the library window and press Start cleaning.");
+    } catch (e) {
+      badge(tab.id, "ERR", "#c62828", "Can't reach the MuteHaram helper. Start it with start_helper.bat. (" + e.message + ")");
+    }
+    return;
   }
   try {
     if (tablet) payload.tablet = true;

@@ -16,6 +16,8 @@ import threading
 import sys
 import time
 
+import numpy as np
+
 from . import config
 from .engine import MediaSource, Session, SAMPLE_RATE
 from .server import make_server
@@ -293,6 +295,129 @@ class TabletFront:
         return mode_route(self.hub)(q)
 
 
+def run_preclean(a, r, session, problem, log):
+    """Clean the whole sound into a.preclean (library): cleaned.pcm grows block by block (a stopped job carries on
+    from there next time), then it becomes audio.opus. Progress goes to progress.json for the library window."""
+    from .library import write_json
+    out_dir = a.preclean
+    prog_path = os.path.join(out_dir, "progress.json")
+    prog = {}
+    try:
+        prog = json.load(open(prog_path, encoding="utf-8"))
+    except Exception:
+        pass
+
+    def save(**k):
+        prog.update(k)
+        write_json(prog_path, prog)
+
+    if session is None:
+        save(error="the sound could not be opened: " + str(problem)[:300], done=False)
+        raise SystemExit(1)
+    cfg = config.load()
+    total, hop = session.total_frames, session.hop
+    nblocks = session.nblocks
+    pcm_path = os.path.join(out_dir, "cleaned.pcm")
+    same_job = prog.get("total_frames") == total and prog.get("hop") == hop and prog.get("mode") == session.mode
+    done_blocks = 0
+    if same_job and os.path.exists(pcm_path):
+        done_blocks = min(os.path.getsize(pcm_path) // (hop * 4), nblocks)
+        with open(pcm_path, "r+b") as f:          # drop a half-written last block
+            f.truncate(done_blocks * hop * 4)
+    elif os.path.exists(pcm_path):
+        os.remove(pcm_path)
+    # what is needed later to show the picture again
+    save(total_frames=total, hop=hop, mode=session.mode, duration=session.duration, nblocks=nblocks,
+         url=a.url, picture=r["mpv_url"], mpv_args=r.get("mpv_args") or [], headers=r.get("headers") or {},
+         subs=list(a.sub), done=False, error="", stage="cleaning", unclean_s=prog.get("unclean_s", 0) if same_job else 0)
+    sess = session if done_blocks == 0 else session.remake(session.mode, done_blocks)
+    if sess is not session:
+        session.stop_work()
+        session.close()
+    log(f"pre-cleaning {nblocks} blocks ({session.duration / 60:.0f} min), starting at block {done_blocks + 1}")
+    t0, n0 = time.time(), done_blocks
+    with open(pcm_path, "ab") as f:
+        for b in range(done_blocks, nblocks):
+            blk = None
+            for attempt in range(4):
+                try:
+                    got = np.array(sess.wait_block(b, timeout=1800))
+                    if not sess.bad[b]:
+                        blk = got
+                        break
+                except Exception as ex:
+                    log(f"block {b + 1}: {ex!r}")
+                # the stream broke here: reopen it from this point and try again (3 times)
+                sess.stop_work()
+                sess.close()
+                if attempt == 3:
+                    break
+                log(f"block {b + 1}: could not be cleaned, reopening the stream (try {attempt + 1}/3)")
+                time.sleep(3 + 5 * attempt)
+                sess = session.remake(session.mode, b)
+            if blk is None:                           # give up on this stretch: silent (never the music)
+                blk = np.zeros((hop, 2), np.int16)
+                save(unclean_s=prog.get("unclean_s", 0) + hop / SAMPLE_RATE)
+                if b + 1 < nblocks:
+                    sess = session.remake(session.mode, b + 1)
+            f.write(np.ascontiguousarray(blk, dtype=np.int16).tobytes())
+            f.flush()
+            done = b + 1 - n0
+            rate = done / max(1e-6, time.time() - t0)
+            save(progress=(b + 1) / nblocks, done_blocks=b + 1, eta_s=int((nblocks - b - 1) / max(rate, 1e-6)))
+    sess.stop_work()
+    sess.close()
+    save(stage="saving")
+    opus = os.path.join(out_dir, "audio.opus")
+    res = subprocess.run([cfg["ffmpeg"], "-y", "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", str(SAMPLE_RATE),
+                          "-ac", "2", "-i", pcm_path, "-t", f"{total / SAMPLE_RATE:.3f}", "-c:a", "libopus", "-b:a", "160k",
+                          opus], capture_output=True, text=True)
+    if res.returncode != 0 or not os.path.exists(opus):
+        save(error="saving the cleaned sound failed: " + res.stderr[-300:])
+        raise SystemExit(1)
+    os.remove(pcm_path)
+    save(done=True, stage="ready", progress=1.0, eta_s=0)
+    log("pre-cleaning finished:", opus)
+
+
+def run_library(a, S, log):
+    """Watch a film from the library: the picture from the website, the sound from the finished file (no GPU)."""
+    from .library import FileSession
+    cfg = config.load()
+    prog = json.load(open(os.path.join(a.library, "progress.json"), encoding="utf-8"))
+    audio = os.path.join(a.library, "audio.opus")
+    if not prog.get("done") or not os.path.exists(audio):
+        raise SystemExit("This film is not cleaned yet.")
+    a.url = prog["url"]
+    a.sub = list(prog.get("subs") or []) + list(a.sub)
+    r = dict(mpv_url=prog["picture"], mpv_args=prog.get("mpv_args") or [], headers=prog.get("headers") or {},
+             media_url=prog["picture"], duration=prog.get("duration"))
+    if a.tablet:
+        front, srv = start_tablet_front(a, log)
+        front.stage("Opening the cleaned sound")
+        sess = FileSession(audio, prog["total_frames"], cfg["ffmpeg"], log)
+        return run_tablet(a, cfg, r, {}, sess, None, r["headers"], log, front, srv)
+    cmd = [cfg["mpv"], r["mpv_url"], f"--audio-file={audio}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}",
+           f"--script={os.path.join(HERE, 'mpv_pip.lua')}"]
+    if S["ontop"] and not a.pip:
+        cmd += ["--ontop"]
+    if a.pip:
+        cmd += ["--script-opts=muteharam-pip=yes", "--ontop", "--no-border", "--autofit=25%", "--geometry=98%:94%"]
+    cfg_dir = os.path.join(config.PC_DIR, "mpv_config")
+    if os.path.exists(os.path.join(cfg_dir, "scripts", "uosc", "main.lua")):
+        cmd += [f"--config-dir={cfg_dir}"]
+    for sub in a.sub:
+        cmd.append(f"--sub-file={sub}")
+    cmd += ["--force-window=immediate", "--network-timeout=120", "--cache=yes",
+            "--title=MuteHaram (cleaned in advance) - ${media-title}", *r["mpv_args"], *a.mpv_arg]
+    if a.start > 0:
+        cmd.append(f"--start={a.start}")
+    env = dict(os.environ)
+    env["PATH"] = config.TOOLS_DIR + os.pathsep + env.get("PATH", "")
+    log("starting mpv with the sound cleaned in advance ...")
+    subprocess.run(cmd, env=env)
+
+
 def start_tablet_front(a, log):
     """Stop older tablet sessions and answer the tablet at once with progress messages."""
     from .stream_server import load_or_create_token, lan_addresses
@@ -422,6 +547,8 @@ def run(argv=None):
                     help="do not open mpv: offer the video and the cleaned audio to the MuteHaram tablet app")
     ap.add_argument("--tablet-port", type=int, default=47804)
     ap.add_argument("--no-player", action="store_true", help="only serve the audio (prints its address)")
+    ap.add_argument("--preclean", metavar="DIR", help="clean the WHOLE sound into DIR now (library) instead of playing")
+    ap.add_argument("--library", metavar="DIR", help="play a film cleaned in advance (library) on the PC or with --tablet")
     ap.add_argument("--mpv-arg", action="append", default=[], help="extra argument for mpv (repeatable)")
     a = ap.parse_args(argv)
     if a.direct:
@@ -429,6 +556,8 @@ def run(argv=None):
     if a.mode is None:        # not chosen in the extension: settings.json decides
         a.mode = S["tablet_mode"] if (a.tablet and S.get("tablet_mode") in ("music", "bandit", "sam", "speech")) else S["mode"]
     log = lambda *m: print(*m, flush=True)
+    if a.library:
+        return run_library(a, S, log)
     if a.mode == "bandit":
         from .bandit_model import is_available
         if not is_available():
@@ -549,6 +678,8 @@ def run(argv=None):
         if pick:
             log("the address picked for the picture looked audio-only; showing", pick[:100], "instead")
             r["mpv_url"] = pick
+    if a.preclean:
+        return run_preclean(a, r, session, problem, log)
     if a.tablet:
         return run_tablet(a, cfg, r, notes, session, problem, headers, log, front, tablet_srv)
     if session is not None:
