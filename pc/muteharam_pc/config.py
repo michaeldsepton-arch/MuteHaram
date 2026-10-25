@@ -36,19 +36,33 @@ def load():
 
 SETTINGS_PATH = os.path.join(PC_DIR, "settings.json")
 DEFAULT_SETTINGS = {
-    "mode": "music",          # "music": remove the music;  "speech": keep ONLY the voices (also removes sound effects)
+    "mode": "music",          # "music": the standard model;  "sam": SAM Audio (best, needs setup_sam.py)
     "gain": 1.0,              # 1.0 = remove fully, 0.5 = halve it, 1.3 = push a little harder
     "window": 10.0,           # AI window in seconds (bigger = better, slower)
     "hop": 6.0,
-    "bandit_recipe": "plain", # better film model: "plain" | "tonal" | "full" (see play.py --help)
     "sam_intro_mute_s": 4.0,  # SAM Audio mode: keep the first seconds of the FILM quiet (no context yet = music leaks); 0 = off
-    "tablet_mode": "",        # "" = same as "mode"; "speech" = keep only voices for the tablet (drops music AND effects)
+    "tablet_mode": "",        # "" = same as "mode"; or "music" / "sam" for the tablet only
     "channels": "auto",       # auto | mono | stereo
     "sub_langs": "en.*,ar.*", # YouTube caption languages to load (yt-dlp style, "all" for everything)
     "pip": False,             # always start in the small corner window
-    "preclean_mode": "sam",   # which cleaning the library uses for films cleaned in advance
+    "preclean_mode": "sam",   # library (cleaned in advance): "sam" (default) or "music" (standard); chosen in the library window
     "ontop": True,            # the player window stays above other windows (also when you click another program); T toggles
 }
+
+
+def save_setting(key, value):
+    """Change one value in pc/settings.json (keeps everything else in it)."""
+    user = {}
+    try:
+        if os.path.exists(SETTINGS_PATH):
+            user = json.load(open(SETTINGS_PATH, encoding="utf-8"))
+    except Exception:
+        user = {}
+    user[key] = value
+    tmp = SETTINGS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(user, f, indent=2)
+    os.replace(tmp, SETTINGS_PATH)
 
 
 def settings():

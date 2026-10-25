@@ -364,11 +364,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMode(mode: String) {
         modeButton.text = when (mode) {
-            "speech" -> "Sound: SPEECH ONLY  (tap: next mode)"
             "precleaned" -> "Sound: CLEANED IN ADVANCE on the PC (library)"
-            "sam" -> "Sound: MUSIC REMOVED, SAM Audio (best)  (tap: next mode)"
-            "bandit" -> "Sound: MUSIC REMOVED, better model  (tap: next mode)"
-            else -> "Sound: MUSIC REMOVED, standard  (tap: next mode)"
+            "sam" -> "Sound: MUSIC REMOVED, SAM Audio  (tap: switch to standard)"
+            else -> "Sound: MUSIC REMOVED, standard  (tap: switch to SAM Audio)"
         }
         refreshOverlay()
     }
@@ -395,8 +393,8 @@ class MainActivity : AppCompatActivity() {
             ui.postDelayed({ setStatus(null) }, 4000)
             return
         }
-        val want = when (s.mode) { "music" -> "sam"; "sam" -> "bandit"; "bandit" -> "speech"; else -> "music" }
-        val label = when (want) { "speech" -> "speech only"; "sam" -> "SAM Audio music removal"; "bandit" -> "the better music removal"; else -> "standard music removal" }
+        val want = if (s.mode == "sam") "music" else "sam"
+        val label = if (want == "sam") "SAM Audio" else "the standard music removal"
         val host = curHost
         val token = curToken
         switching = true

@@ -225,10 +225,10 @@ def tablet_kind(url, note_kind):
 
 
 def mode_route(hub):
-    """/mode?m=music|speech : switch the cleaning (runs in the background; answers at once)."""
+    """/mode?m=music|sam : switch the cleaning (answers once the new mode has sound ready)."""
     def route(q):
         want = (q.get("m") or [""])[0]
-        if want in ("music", "bandit", "sam", "speech"):
+        if want in ("music", "sam"):
             if hub.switch(want) == want:   # answers only when the new mode has its first sound ready (can take a minute)
                 hub.cur.prepare()
         return {"mode": hub.mode}
@@ -518,14 +518,8 @@ def run(argv=None):
     ap.add_argument("--window", type=float, default=S["window"], help="AI window, seconds (more = better, slower)")
     ap.add_argument("--hop", type=float, default=S["hop"], help="seconds produced per window")
     ap.add_argument("--gain", type=float, default=S["gain"], help="1.0 = remove fully, 0.5 = halve it, 1.3 = push harder")
-    ap.add_argument("--mode", choices=["music", "bandit", "sam", "speech"], default=None,
-                    help='"music" removes the music; "bandit" removes the music with a better film model (Bandit v2); '
-                         '"sam" removes the music with SAM Audio (best, needs setup_sam.py); '
-                         '"speech" keeps only voices (also drops sound effects)')
-    ap.add_argument("--bandit-recipe", choices=["plain", "tonal", "full"], default=S["bandit_recipe"],
-                    help="how the better model's result is used: plain = take out its music estimate; "
-                         "tonal = take out only the sustained-tone part of its music+effects estimates (keeps hooves etc.); "
-                         "full = music estimate plus the sustained-tone part of its effects estimate")
+    ap.add_argument("--mode", choices=["music", "sam"], default=None,
+                    help='"music" = the standard model; "sam" = SAM Audio (best, needs setup_sam.py)')
     ap.add_argument("--direct", action="store_true",
                     help="the addresses given are video streams (not web pages), whatever they look like")
     ap.add_argument("--pip", action="store_true", default=bool(S["pip"]),
@@ -554,15 +548,12 @@ def run(argv=None):
     if a.direct:
         FORCE_DIRECT.update([a.url, a.audio_src, *a.alt])
     if a.mode is None:        # not chosen in the extension: settings.json decides
-        a.mode = S["tablet_mode"] if (a.tablet and S.get("tablet_mode") in ("music", "bandit", "sam", "speech")) else S["mode"]
+        a.mode = S["tablet_mode"] if (a.tablet and S.get("tablet_mode") in ("music", "sam")) else S["mode"]
+    if a.mode not in ("music", "sam"):
+        a.mode = "music"
     log = lambda *m: print(*m, flush=True)
     if a.library:
         return run_library(a, S, log)
-    if a.mode == "bandit":
-        from .bandit_model import is_available
-        if not is_available():
-            log("Bandit v2 is not installed (run setup_pc.py): using the standard music removal instead")
-            a.mode = "music"
     if a.mode == "sam":
         from .sam_model import is_available as sam_ok
         if not sam_ok():
@@ -602,8 +593,7 @@ def run(argv=None):
         src = MediaSource(rr["media_url"], rr["headers"], cfg["ffmpeg"], cfg["ffprobe"])
         sess = Session(src, duration=rr["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
                        device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
-                       channels_mode=a.channels, mode=a.mode, bandit_recipe=a.bandit_recipe,
-                       intro_mute_s=S["sam_intro_mute_s"])
+                       channels_mode=a.channels, mode=a.mode, intro_mute_s=S["sam_intro_mute_s"])
         try:
             ok, why = src.probe(max(0.0, min(a.start, (rr["duration"] or 1e9) - 3)))
             if not ok:
@@ -615,8 +605,7 @@ def run(argv=None):
         sess.remake = lambda m, start_block=0: Session(src, duration=sess.duration, window_s=a.window, hop_s=a.hop,
                                         music_gain=a.gain, device="cpu" if a.cpu else None,
                                         models_dir=cfg["models_dir"], log=log, channels_mode=a.channels, mode=m,
-                                        start_block=start_block, bandit_recipe=a.bandit_recipe,
-                                        intro_mute_s=S["sam_intro_mute_s"])
+                                        start_block=start_block, intro_mute_s=S["sam_intro_mute_s"])
         return sess
 
     # Look at every candidate address and try the most promising first: a main ("master") playlist

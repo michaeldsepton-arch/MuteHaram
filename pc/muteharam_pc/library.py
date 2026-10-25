@@ -191,10 +191,16 @@ class Runner:
         return dict(running=self.running, current=self.current)
 
     def _next(self):
-        for x in self.lib.items():
+        for x in self.lib.items():                    # "held" = paused for this one film only: skipped
             if x["status"] in ("queued", "processing", "paused"):
                 return x
         return None
+
+    def hold(self, item_id):
+        """Pause one film: it keeps what is done and is skipped until resumed (the rest of the queue carries on)."""
+        self.lib.update(str(item_id), status="held")
+        if self.current == str(item_id):
+            self._kill()
 
     def _loop(self):
         while True:
@@ -237,7 +243,8 @@ class Runner:
             self.lib.update(item_id, status="ready", error="")
             self.log(f"library: {item_id} is ready")
         elif self._stopped_by_us:
-            self.lib.update(item_id, status="paused")
+            if (self.lib.meta(item_id) or {}).get("status") != "held":
+                self.lib.update(item_id, status="paused")
         else:
             self.lib.update(item_id, status="error",
                             error=prog.get("error") or f"the cleaning program stopped (code {p.returncode}); see pc/logs")

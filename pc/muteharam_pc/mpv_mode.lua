@@ -1,4 +1,4 @@
--- MuteHaram: switch the cleaning (standard music removal / better film model / speech only) while watching.
+-- MuteHaram: switch the cleaning (standard model / SAM Audio) while watching.
 -- Key: C cycles through the modes (also a button in the controls bar). The PC re-cleans from where you are; a few seconds of wait.
 local port = mp.get_opt("muteharam-mode-port")
 local mode = mp.get_opt("muteharam-mode") or "music"
@@ -6,11 +6,9 @@ if not port then return end
 
 local names = {
     music  = "MUSIC REMOVAL, standard (voices and sound effects stay)",
-    bandit = "MUSIC REMOVAL, better film model (voices and sound effects stay)",
     sam    = "MUSIC REMOVAL, SAM Audio, best (voices and sound effects stay)",
-    speech = "SPEECH ONLY (music and sound effects removed)",
 }
-local nextmode = { music = "sam", sam = "bandit", bandit = "speech", speech = "music" }
+local nextmode = { music = "sam", sam = "music" }
 local busy = false
 
 local function toggle()

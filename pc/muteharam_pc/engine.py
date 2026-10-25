@@ -5,16 +5,15 @@ How it fits together
   * A media URL (or file) is decoded by ffmpeg to 44.1 kHz stereo float.
   * A worker thread runs the TIGER network on the GPU over sliding windows, keeping
     only the centre of each window (so every kept sample has `margin` seconds of
-    context on both sides), and subtracts the music estimate from both channels
-    ("music" mode) or keeps only the dialogue estimate ("speech" mode).
+    context on both sides), and subtracts the music estimate ("music" mode = the standard model).
+    "sam" mode uses SAM Audio instead (a separate program, see sam_model.py) on overlapping windows.
   * The cleaned audio is stored block by block (a block = one hop).
   * server.py exposes it as a normal seekable WAV file over local HTTP; mpv plays the
     original video with that WAV as its audio track. Because this is on-demand and
     runs several times faster than real time, the audio is always ready before the
     player needs it: no audio/video delay tricks.
   * If the player seeks, the worker jumps to the block that was asked for.
-  * Trouble never turns into silence: a hiccup while reading the source is retried;
-    a part that still can't be cleaned plays as the ORIGINAL audio.
+  * A hiccup while reading the source is retried; a part that still can't be cleaned is silent (never the music).
 """
 import os
 import subprocess
@@ -149,7 +148,7 @@ class MediaSource:
 
 
 # modes that work on overlapping windows blended smoothly: mode -> (window, block length) in seconds
-BLEND = {"bandit": (8.0, 4.0), "sam": (16.0, 12.0)}
+BLEND = {"sam": (16.0, 12.0)}
 BLEND_HOP = {m: v[1] for m, v in BLEND.items()}
 LEAD_IN_S = 3.0
 
@@ -158,10 +157,10 @@ class Session:
     def __init__(self, source, duration=None, window_s=10.0, hop_s=6.0, lookahead_s=150.0,
                  music_gain=1.0, device=None, models_dir=None, log=print,
                  channels_mode="auto", patience_s=45.0, mode="music", start_block=0,
-                 bandit_recipe="plain", intro_mute_s=0.0, fallback="silence"):
-        assert mode in ("music", "speech", "bandit", "sam")
+                 intro_mute_s=0.0, fallback="silence"):
+        assert mode in ("music", "sam")
         if mode in BLEND_HOP:
-            window_s, hop_s = BLEND[mode]       # bandit: what that model was built for
+            window_s, hop_s = BLEND[mode]
         assert window_s > hop_s > 0
         self.src = source
         self.log = log
@@ -173,7 +172,6 @@ class Session:
         self.win = int(round(window_s * SAMPLE_RATE))
         self.margin = (self.win - self.hop) // 2
         self.win = self.hop + 2 * self.margin
-        self.bandit_recipe = bandit_recipe
         self.intro_mute = intro_mute_s if mode == "sam" else 0.0
         self._bprev = None
         if mode in BLEND_HOP:
@@ -183,19 +181,13 @@ class Session:
         self.nblocks = -(-self.total_frames // self.hop)
         self.lookahead_blocks = max(2, int(lookahead_s / hop_s))
 
-        # "music": subtract the estimated music; "speech": keep only the estimated dialogue
-        if mode == "bandit":
-            from .bandit_model import load_bandit
-            self.net, self.device = load_bandit(None, device)
-            self.target = None
-        elif mode == "sam":
+        if mode == "sam":
             from .model import pick_device
             from .sam_model import get_client
             self.net, self.device, self.target = None, pick_device(device), None
             self.sam = get_client(log)                   # a separate program holds the model (own environment)
         else:
-            self.net, self.device, self.target = load_network("music" if mode == "music" else "dialog",
-                                                              models_dir, device)
+            self.net, self.device, self.target = load_network("music", models_dir, device)
         # "stereo": run the network on left and right separately (better stereo, 2x work);
         # "mono": run it once on the mix. auto = stereo when a GPU is available.
         self.stereo_sep = channels_mode == "stereo" or (channels_mode == "auto" and self.device.type == "cuda")
@@ -333,8 +325,6 @@ class Session:
         try:
             from . import model as _model
             _model._NET_CACHE.clear()
-            from . import bandit_model as _bm
-            _bm._CACHE.clear()
             import gc
             gc.collect()
             if torch.cuda.is_available():
@@ -554,23 +544,6 @@ class Session:
                     last = b
                 time.sleep(0.5)
 
-    @torch.no_grad()
-    def _bandit_removal(self, x):
-        """What to take out of one window [win, 2], according to the recipe."""
-        from .bandit_model import separate
-        from .hpss import harmonic
-        o = separate(self.net, self.device, x, ("music", "sfx"))
-        music, sfx = o["music"], o["sfx"]
-        if self.bandit_recipe == "plain":                  # the model's music estimate
-            return music
-
-        def tonal(a):                                      # the sustained-tone part of an estimate
-            t = torch.from_numpy(np.ascontiguousarray(a.T)).to(self.device)
-            return harmonic(t, margin=1.0).cpu().numpy().T
-        if self.bandit_recipe == "tonal":                  # keep sharp sounds (hooves ...), take out sustained tones
-            return tonal(music) + tonal(sfx)
-        return music + tonal(sfx)                          # "full": music estimate + tonal part of the effects estimate
-
     def _sam_removal(self, x):
         """What SAM Audio takes out of one window [win, 2]: the window minus its music-free version."""
         if self.sam.proc is None:                      # released while nothing was playing: load it again
@@ -578,10 +551,10 @@ class Session:
             self.sam = get_client(self.log)
         return x - self.sam.remove_music(x)
 
-    def _clean_bandit(self, x, b, eff=None):
+    def _clean_blend(self, x, b, eff=None):
         hop = self.hop
         xr = eff[1] if eff else x
-        rem = self._sam_removal(xr) if self.mode == "sam" else self._bandit_removal(xr)      # for window b
+        rem = self._sam_removal(xr)                        # for window b
         if eff:                                            # line the shifted window up with window b
             sh = eff[0]
             al = np.zeros((self.win, CHANNELS), np.float32)
@@ -610,7 +583,7 @@ class Session:
     def _clean(self, x, b=None, eff=None):
         """x: [win, 2] float32 -> cleaned centre [hop, 2] int16."""
         if self.mode in BLEND_HOP:
-            return self._clean_bandit(x, b, eff)
+            return self._clean_blend(x, b, eff)
         c = slice(self.margin, self.margin + self.hop)
         if self.stereo_sep:
             t = torch.from_numpy(np.ascontiguousarray(x.T)).to(self.device)[:, None, :]   # [2,1,win]
@@ -619,15 +592,13 @@ class Session:
             mono = torch.from_numpy(x.mean(axis=1)).to(self.device)[None, None]
             est = self.net(mono)[0, self.target].float().cpu().numpy()[c, None]           # [hop,1]
         xc = x[c]
-        # music mode: est is the music; speech mode: est is the dialogue, everything else goes
-        removal = est if self.mode == "music" else xc - est
-        y = xc - self.gain * removal
+        y = xc - self.gain * est                           # est is the music
         return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
 
 
 class SessionHub:
     """What the audio server serves. Holds ONE cleaning Session at a time and can swap it for the other mode
-    ("music" = remove the music, "speech" = keep only voices) while the player keeps its connection: the file
+    ("music" = the standard model, "sam" = SAM Audio) while the player keeps its connection: the file
     has the same length either way, the player just asks for the sound again from where it is."""
 
     def __init__(self, session, remake):

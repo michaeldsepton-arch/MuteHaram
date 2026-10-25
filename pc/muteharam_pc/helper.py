@@ -117,7 +117,7 @@ def play_command(req):
             cmd += ["--sub", str(sub)]
     if req.get("pip"):
         cmd += ["--pip"]
-    if req.get("mode") in ("music", "bandit", "sam", "speech"):
+    if req.get("mode") in ("music", "sam"):
         cmd += ["--mode", req["mode"]]
     if req.get("direct"):
         cmd += ["--direct"]
@@ -162,8 +162,10 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("Origin") and not self._app_ok():
                 return self._json(403, {"error": "not allowed"})
             total, watched = lib.space()
+            from .sam_model import is_available as sam_ok
             return self._json(200, {"items": lib.items(), "runner": run.state(),
-                                    "space_mb": total, "watched_mb": watched})
+                                    "space_mb": total, "watched_mb": watched,
+                                    "model": config.settings().get("preclean_mode") or "sam", "sam_ready": sam_ok()})
         return None
 
     def _library_post(self, req):
@@ -181,8 +183,14 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/remove":
             run.cancel(str(req["id"]))
             lib.remove(str(req["id"]))
-        elif p == "/api/retry":
+        elif p in ("/api/retry", "/api/resume"):
             lib.update(str(req["id"]), status="queued", error="")
+        elif p == "/api/model":
+            if req.get("model") not in ("sam", "music"):
+                return self._json(400, {"error": "unknown model"})
+            config.save_setting("preclean_mode", req["model"])
+        elif p == "/api/hold":
+            run.hold(str(req["id"]))
         elif p == "/api/delete-watched":
             return self._json(200, {"ok": True, "deleted": lib.delete_watched()})
         elif p == "/api/watched":

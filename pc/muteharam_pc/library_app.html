@@ -43,6 +43,12 @@
   #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #26303a; color: var(--text);
            padding: 10px 16px; border-radius: 8px; border: 1px solid var(--line); opacity: 0; transition: opacity .3s; pointer-events: none; }
   #toast.show { opacity: 1; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; background: var(--panel); color: var(--dim); padding: 7px 12px; }
+  .seg button.on { background: #24384d; color: #fff; font-weight: 600; }
+  .pct { font-size: 22px; font-weight: 700; color: var(--blue); font-variant-numeric: tabular-nums; width: 74px; text-align: right; }
+  .pct.paused, .pct.held { color: var(--warn); }
+  .st.held { color: var(--warn); }
   .sectionhead { display: flex; align-items: center; gap: 14px; }
   .sectionhead h2 { flex: 1; }
   #space { color: var(--dim); font-size: 13px; }
@@ -55,6 +61,9 @@
   <h1>MuteHaram Library</h1>
   <div id="state">Loading ...</div>
   <div id="space"></div>
+  <div class="seg" id="modelSeg" title="Which model cleans the films (applies to the next one started)">
+    <button data-m="sam">SAM Audio (best)</button><button data-m="music">Standard</button>
+  </div>
   <button id="toggle" class="primary">Start cleaning</button>
 </header>
 <main>
@@ -118,7 +127,7 @@ function render() {
   const items = data.items || [];
   const cur = items.find((x) => x.id === run.current);
   const st = document.getElementById("state");
-  const waiting = items.filter((x) => x.status !== "ready" && x.status !== "error").length;
+  const waiting = items.filter((x) => !["ready", "error", "held"].includes(x.status)).length;
   if (run.running && cur) {
     st.innerHTML = "";
     st.append("Cleaning ", el("b", {}, cur.title || "(untitled)"), ` — ${Math.round(cur.progress * 100)} %` +
@@ -126,11 +135,15 @@ function render() {
   } else if (run.running) {
     st.textContent = "Starting ...";
   } else {
-    st.textContent = waiting ? `Stopped. ${waiting} waiting in the queue. The graphics card is free.`
+    st.textContent = waiting ? `Paused. ${waiting} waiting in the queue. The graphics card is free.`
                              : "Nothing waiting. The graphics card is free.";
   }
+  for (const b of document.querySelectorAll("#modelSeg button")) {
+    b.classList.toggle("on", b.dataset.m === (data.model || "sam"));
+    if (b.dataset.m === "sam") { b.disabled = data.sam_ready === false; b.title = b.disabled ? "SAM Audio is not set up on this PC (setup_sam.py)" : ""; }
+  }
   const t = document.getElementById("toggle");
-  t.textContent = run.running ? "Stop cleaning" : "Start cleaning";
+  t.textContent = run.running ? "Pause cleaning" : "Start cleaning";
   t.className = run.running ? "stop" : "primary";
   t.disabled = !run.running && !waiting;
 
@@ -176,7 +189,8 @@ function render() {
   q.forEach((x, i) => {
     let label = "Waiting";
     if (x.status === "processing") label = `Cleaning ${Math.round(x.progress * 100)} %` + (x.eta_s ? ` · about ${fmt(x.eta_s)} left` : "");
-    else if (x.status === "paused" || (x.status === "queued" && x.progress > 0)) label = `Stopped at ${Math.round(x.progress * 100)} % (carries on when started)`;
+    else if (x.status === "held") label = `Paused for this film at ${Math.round(x.progress * 100)} % (press Resume; the rest of the queue carries on)`;
+    else if (x.status === "paused" || (x.status === "queued" && x.progress > 0)) label = `Paused at ${Math.round(x.progress * 100)} % (carries on from there when cleaning is started)`;
     else if (x.status === "error") label = "Problem: " + (x.error || "unknown");
     const cell = el("td", {}, el("div", { class: "title" }, x.title || "(untitled)"),
                     el("div", { class: "st " + x.status }, label));
@@ -185,13 +199,16 @@ function render() {
       bar.firstChild.style.width = (x.progress * 100).toFixed(1) + "%";
       cell.append(bar);
     }
+    const pct = el("td", { class: "pct " + x.status }, (x.progress > 0 || x.status === "processing") ? `${Math.floor(x.progress * 100)}%` : "");
     const acts = el("td", { class: "act" },
       btn("▲", () => api("/api/move", { id: x.id, delta: -1 })),
       " ", btn("▼", () => api("/api/move", { id: x.id, delta: 1 })),
       " ");
     if (x.status === "error") acts.append(btn("Try again", () => api("/api/retry", { id: x.id })), " ");
+    else if (x.status === "held") acts.append(btn("Resume", () => api("/api/resume", { id: x.id }), "primary"), " ");
+    else acts.append(btn("Pause", () => api("/api/hold", { id: x.id })), " ");
     acts.append(btn("Remove", async () => { if (confirm(`Remove "${x.title}" from the queue?`)) await api("/api/remove", { id: x.id }); }));
-    tb.append(el("tr", {}, el("td", { class: "n" }, String(i + 1)), cell, acts));
+    tb.append(el("tr", {}, el("td", { class: "n" }, String(i + 1)), cell, pct, acts));
   });
   qbox.append(tb);
 }
@@ -205,6 +222,13 @@ async function refresh() {
   } catch (e) {
     document.getElementById("offline").style.display = "block";
   }
+}
+for (const b of document.querySelectorAll("#modelSeg button")) {
+  b.addEventListener("click", async () => {
+    try { await api("/api/model", { model: b.dataset.m }); toast(b.dataset.m === "sam" ? "Films will be cleaned with SAM Audio" : "Films will be cleaned with the standard model"); }
+    catch (e) { toast("Problem: " + e.message); }
+    refresh();
+  });
 }
 document.getElementById("delWatched").addEventListener("click", async () => {
   if (!confirm(`Delete the cleaned sound of every watched film (${data.watched_mb || 0} MB)?`)) return;

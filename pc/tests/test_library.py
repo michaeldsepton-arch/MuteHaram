@@ -57,6 +57,18 @@ time.sleep(2.5)
 st = {x["title"]: x["status"] for x in lib.items()}
 print("after stop:", st, run.state())
 assert st["Film B"] == "paused" and not run.state()["running"] and run.proc is None
+# pause ONE film while it is being cleaned: it is held (skipped), the rest of the queue would carry on
+run.start()
+t0 = time.time()
+while time.time() - t0 < 20 and {x["title"]: x["status"] for x in lib.items()}["Film B"] != "processing":
+    time.sleep(0.5)
+run.hold(next(x["id"] for x in lib.items() if x["title"] == "Film B"))
+time.sleep(3)
+st = {x["title"]: x["status"] for x in lib.items()}
+print("after pausing Film B:", st)
+assert st["Film B"] == "held" and run.proc is None
+run.stop()
+
 # watched films: space shown, "delete all watched" frees it and keeps the rest
 import os as _os
 cid = next(x["id"] for x in lib.items() if x["title"] == "Film C")

@@ -127,13 +127,13 @@ def setup_python(args):
         run([py, "-m", "pip", "install", "torch", "--index-url", f"https://download.pytorch.org/whl/{index}"])
     say("Installing the other Python packages")
     run([py, "-m", "pip", "install", "-r", os.path.join(HERE, "requirements.txt")])
-    # torchaudio (needed by the better film model, Bandit v2): the same version as torch, from the same place
+    # torchaudio (needed by SAM Audio): the same version as torch, from the same place
     v = subprocess.run([py, "-c", "import torch;print(torch.__version__.split('+')[0])"], capture_output=True, text=True)
     if v.returncode == 0 and v.stdout.strip():
         r = subprocess.run([py, "-m", "pip", "install", f"torchaudio=={v.stdout.strip()}",
                             "--index-url", f"https://download.pytorch.org/whl/{index}"])
         if r.returncode != 0:
-            print("   (torchaudio could not be installed: the Bandit v2 cleaning mode will not be available)")
+            print("   (torchaudio could not be installed: SAM Audio will not work)")
     return py
 
 
@@ -148,25 +148,6 @@ def setup_weights():
         download(HF + fn, dest, fn)
         if os.path.getsize(dest) != size:
             sys.exit(f"{fn}: unexpected size {os.path.getsize(dest)} (expected {size}); delete it and retry")
-
-
-def setup_bandit(py):
-    """Bandit v2: better at finding film music than TIGER. Download the checkpoint (447 MB), keep only the weights."""
-    dest_dir = os.path.join(MODELS, "..", "bandit-v2")
-    dest_dir = os.path.normpath(dest_dir)
-    final = os.path.join(dest_dir, "model.pt")
-    if os.path.exists(final):
-        print("   Bandit v2: present")
-        return
-    say("Model weights (Bandit v2, about 450 MB; CC BY-SA 4.0, https://zenodo.org/records/12701995)")
-    ckpt = os.path.join(dest_dir, "checkpoint-multi.ckpt")
-    download("https://zenodo.org/records/12701995/files/checkpoint-multi.ckpt?download=1", ckpt, "checkpoint-multi.ckpt")
-    r = subprocess.run([py, "-c", "from muteharam_pc.bandit_model import convert_checkpoint as c; import sys; c(sys.argv[1])", ckpt],
-                       cwd=HERE)
-    if r.returncode != 0 or not os.path.exists(final):
-        print("   (could not prepare the Bandit v2 weights; the extra cleaning mode will not be available)")
-        return
-    os.remove(ckpt)
 
 
 # ---------------------------------------------------------------------- tools
@@ -289,7 +270,6 @@ def main():
     ap.add_argument("--no-venv", action="store_true")
     ap.add_argument("--skip-tools", action="store_true")
     ap.add_argument("--skip-weights", action="store_true")
-    ap.add_argument("--no-bandit", action="store_true", help="do not download the Bandit v2 film model (450 MB)")
     ap.add_argument("--skip-python", action="store_true")
     ap.add_argument("--check", action="store_true")
     args = ap.parse_args()
@@ -298,8 +278,6 @@ def main():
     py = sys.executable if args.skip_python else setup_python(args)
     if not args.skip_weights:
         setup_weights()
-        if not args.no_bandit:
-            setup_bandit(py)
     if not args.skip_tools:
         setup_tools()
         setup_uosc()

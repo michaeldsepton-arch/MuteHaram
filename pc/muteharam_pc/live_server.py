@@ -41,8 +41,7 @@ class Cleaner:
 
     def __init__(self, mode="music", gain=1.0, device=None, models_dir=None, bypass=False):
         self.mode, self.gain, self.bypass = mode, gain, bypass
-        self.net, self.device, self.target = load_network("music" if mode == "music" else "dialog",
-                                                          models_dir, device)
+        self.net, self.device, self.target = load_network("music", models_dir, device)
         self.stereo = self.device.type == "cuda"
         import threading
         self.lock = threading.Lock()
@@ -62,7 +61,7 @@ class Cleaner:
                 else:
                     mono = torch.from_numpy(x.mean(axis=1)).to(self.device)[None, None]
                     est = self.net(mono)[0, self.target].float().cpu().numpy()[c, None]
-            removal = est if self.mode == "music" else xc - est
+            removal = est
             y = xc - self.gain * removal
         return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
 
@@ -172,7 +171,7 @@ def main():
     S = config.settings()
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=PORT)
-    ap.add_argument("--mode", default=S["mode"], choices=["music", "speech"])
+    ap.add_argument("--mode", default="music", choices=["music"])
     ap.add_argument("--gain", type=float, default=S["gain"])
     ap.add_argument("--cpu", action="store_true")
     ap.add_argument("--no-token", action="store_true")

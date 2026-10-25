@@ -7,7 +7,7 @@ The engine must not turn passing trouble into silence, and must never let the mu
    audio of that part is still produced.
 2. A part of the source that can NEVER be decoded is silent by default (never the music), or the original
    audio (read separately) with fallback="original".
-3. Normal and "speech" modes both run.
+3. The standard mode runs.
 """
 import os
 import subprocess
@@ -147,8 +147,8 @@ reader.join(30)
 assert "a" in res and len(res["a"]) == 10 * SAMPLE_RATE
 print("close-while-reading test: ok")
 
-# 3. both modes run
-for mode in ("music", "speech"):
+# 3. the standard mode runs
+for mode in ("music",):
     src = MediaSource(wav, ffmpeg=cfg["ffmpeg"], ffprobe=cfg["ffprobe"])
     s = make(src, mode=mode)
     a = s.read_frames(0, 8 * SAMPLE_RATE)
