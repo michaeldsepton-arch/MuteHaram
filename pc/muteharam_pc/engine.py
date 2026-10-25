@@ -243,6 +243,7 @@ class Session:
         """Block until cleaned block `b` is available (priority-boosting it)."""
         with self.cv:
             self.want = b
+            self._last_read = time.time()          # someone needs this sound (the player, or the library cleaning)
             self.cv.notify_all()
             t0 = time.time()
             while not self.ready[b]:

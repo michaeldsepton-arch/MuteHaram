@@ -335,7 +335,7 @@ def run_preclean(a, r, session, problem, log):
         session.stop_work()
         session.close()
     log(f"pre-cleaning {nblocks} blocks ({session.duration / 60:.0f} min), starting at block {done_blocks + 1}")
-    t0, n0 = time.time(), done_blocks
+    recent = []                                    # when the last blocks finished: the estimate follows the current speed
     with open(pcm_path, "ab") as f:
         for b in range(done_blocks, nblocks):
             blk = None
@@ -362,9 +362,12 @@ def run_preclean(a, r, session, problem, log):
                     sess = session.remake(session.mode, b + 1)
             f.write(np.ascontiguousarray(blk, dtype=np.int16).tobytes())
             f.flush()
-            done = b + 1 - n0
-            rate = done / max(1e-6, time.time() - t0)
-            save(progress=(b + 1) / nblocks, done_blocks=b + 1, eta_s=int((nblocks - b - 1) / max(rate, 1e-6)))
+            recent = (recent + [time.time()])[-11:]
+            eta = None
+            if len(recent) >= 3:                   # (the first block includes loading the model: not counted)
+                per_block = (recent[-1] - recent[0]) / (len(recent) - 1)
+                eta = int((nblocks - b - 1) * per_block)
+            save(progress=(b + 1) / nblocks, done_blocks=b + 1, eta_s=eta)
     sess.stop_work()
     sess.close()
     save(stage="saving")
