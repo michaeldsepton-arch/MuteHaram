@@ -61,6 +61,7 @@
   <h1>MuteHaram Library</h1>
   <div id="state">Loading ...</div>
   <div id="space"></div>
+  <button id="tabletStop" class="stop" style="display:none" title="The tablet stops playing and says so">Stop sending to tablet</button>
   <button id="toggle" class="primary">Start cleaning</button>
 </header>
 <main>
@@ -142,6 +143,7 @@ function render() {
   t.className = run.running ? "stop" : "primary";
   t.disabled = !run.running && !waiting;
 
+  document.getElementById("tabletStop").style.display = data.tablet_active ? "" : "none";
   const ti = data.tablet || {};
   document.getElementById("tabletInfo").textContent = ti.token
     ? `Tablet app settings: PC address ${(ti.addresses || []).join(" or ")}  ·  token ${ti.token}` : "";
@@ -225,6 +227,10 @@ async function refresh() {
     document.getElementById("offline").style.display = "block";
   }
 }
+document.getElementById("tabletStop").addEventListener("click", async () => {
+  try { await api("/api/tablet-stop"); toast("Stopped sending to the tablet"); } catch (e) { toast("Problem: " + e.message); }
+  refresh();
+});
 document.getElementById("delWatched").addEventListener("click", async () => {
   if (!confirm(`Delete the cleaned sound of every watched film (${data.watched_mb || 0} MB)?`)) return;
   try { const r = await api("/api/delete-watched"); toast(`Deleted ${r.deleted} film(s)`); } catch (e) { toast("Problem: " + e.message); }

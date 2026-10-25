@@ -76,6 +76,11 @@ class MainActivity : AppCompatActivity() {
     @Volatile
     private var resumeMs = 0L
     private var autoRetries = 0
+
+    // a film that failed to play after the automatic retries: not started again by itself (the message stays up)
+    @Volatile
+    private var stoppedId = -1L
+    private var pollFailures = 0
     private var lastRetryAt = 0L
     private val remember = object : Runnable {
         override fun run() {
@@ -264,6 +269,8 @@ class MainActivity : AppCompatActivity() {
                 if (tappable) {
                     status.setOnClickListener {
                         pendingOld?.let { o -> acceptedOldId = o.id; pendingOld = null }
+                        stoppedId = -1L
+                        autoRetries = 0
                         currentId = -1L
                         setStatus("Trying again ...")
                     }
@@ -300,6 +307,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     val url = "http://" + host + ":47804/session.json?t=" + URLEncoder.encode(tok, "UTF-8")
                     val text = httpGet(url)
+                    pollFailures = 0
                     val j = org.json.JSONObject(text)
                     if (j.optBoolean("preparing")) {
                         // "Send to the tablet" was pressed: the PC opens the film and cleans its first seconds
@@ -314,7 +322,9 @@ class MainActivity : AppCompatActivity() {
                         continue
                     }
                     val s = SessionInfo.parse(text)
-                    if (s.id == resumeId && resumeMs > 0 && s.id != currentId) {
+                    if (s.id == stoppedId) {
+                        // this film failed to play: leave the error message up until it is tapped or a new film is sent
+                    } else if (s.id == resumeId && resumeMs > 0 && s.id != currentId) {
                         // the same film again after a problem: carry on where it was, never from the beginning
                         pendingOld = null
                         currentId = s.id
@@ -339,7 +349,21 @@ class MainActivity : AppCompatActivity() {
                         setStatus("Connected to the PC")
                     }
                 } catch (e: Exception) {
-                    if (player == null || player?.isPlaying != true) {
+                    pollFailures++
+                    if (player != null && pollFailures >= 3 &&
+                        (e is java.net.ConnectException || e is java.net.SocketTimeoutException)) {
+                        // the PC stopped sending (cancelled there, or switched off): stop here too, and say so
+                        ui.post {
+                            player?.release()
+                            player = null
+                            playerView.player = null
+                            current = null
+                            refreshOverlay()
+                        }
+                        stoppedId = -1L
+                        currentId = -1L
+                        setStatus("The PC stopped sending the film.\nSend it again from the PC when you want to carry on (it continues where it was).")
+                    } else if (stoppedId == -1L && (player == null || player?.isPlaying != true)) {
                         val why = when (e) {
                             is java.net.ConnectException, is java.net.SocketTimeoutException ->
                                 "Nothing has been sent from the PC yet (or the PC is not on this Wi-Fi)."
@@ -439,7 +463,10 @@ class MainActivity : AppCompatActivity() {
                     ui.postDelayed({ if (player === p) play(s.copy(startSeconds = pos / 1000.0), host, token, withSubs) }, 2000)
                     return
                 }
-                currentId = -1L        // the next poll offers the same session again (from where it was); tapping retries
+                // give up on this film until the message is tapped (no endless restarting, the message stays up)
+                stoppedId = s.id
+                currentId = s.id
+                ui.post { if (player === p) p.stop() }
                 var why = ""
                 var c: Throwable? = error.cause
                 var depth = 0

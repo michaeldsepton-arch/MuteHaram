@@ -177,6 +177,9 @@ try {
       id: "muteharam-tablet", title: "Send to the tablet (MuteHaram tablet app)", contexts: ["action"],
     });
     chrome.contextMenus.create({
+      id: "muteharam-tablet-stop", title: "Stop sending to the tablet", contexts: ["action"],
+    });
+    chrome.contextMenus.create({
       id: "muteharam-queue", title: "Add to the MuteHaram library (clean in advance, watch later)", contexts: ["action"],
     });
     chrome.contextMenus.create({
@@ -191,6 +194,10 @@ try {
     if (info.menuItemId === "muteharam-live" && tab) startLive(tab);
     if (info.menuItemId === "muteharam-tablet" && tab) openInPlayer(tab, false, true);
     if (info.menuItemId === "muteharam-queue" && tab) openInPlayer(tab, false, false, true);
+    if (info.menuItemId === "muteharam-tablet-stop") {
+      post("/tablet/stop", {}).then((r) => { if (tab) badge(tab.id, r.ok ? "" : "ERR", "#c62828", r.ok ? "" : "Could not stop it (is the helper running?)"); })
+        .catch(() => { if (tab) badge(tab.id, "ERR", "#c62828", "Can't reach the MuteHaram helper."); });
+    }
     if (info.menuItemId === "muteharam-library") chrome.tabs.create({ url: "http://127.0.0.1:47800/library" });
   });
 } catch (e) { /* contextMenus not available: normal click still works */ }

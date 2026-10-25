@@ -314,7 +314,7 @@ def run_preclean(a, r, session, problem, log):
     elif os.path.exists(pcm_path):
         os.remove(pcm_path)
     # what is needed later to show the picture again
-    save(total_frames=total, hop=hop, mode=session.mode, duration=session.duration, nblocks=nblocks,
+    save(direct=bool(a.direct), total_frames=total, hop=hop, mode=session.mode, duration=session.duration, nblocks=nblocks,
          url=a.url, picture=r["mpv_url"], mpv_args=r.get("mpv_args") or [], headers=r.get("headers") or {},
          subs=list(a.sub), done=False, error="", stage="cleaning", unclean_s=prog.get("unclean_s", 0) if same_job else 0)
     def remake(b):
@@ -401,11 +401,22 @@ def run_library(a, S, log):
     a.sub = list(prog.get("subs") or []) + list(a.sub)
     r = dict(mpv_url=prog["picture"], mpv_args=prog.get("mpv_args") or [], headers=prog.get("headers") or {},
              media_url=prog["picture"], duration=prog.get("duration"))
+    # a film queued from a stream address (CineHD ...) is a stream, not a web page: don't ask yt-dlp about it
+    try:
+        req = json.load(open(os.path.join(a.library, "meta.json"), encoding="utf-8")).get("req") or {}
+    except Exception:
+        req = {}
+    notes = {}
+    if req.get("direct") or prog.get("direct"):
+        FORCE_DIRECT.update([a.url, prog["picture"]])
     if a.tablet:
         front, srv = start_tablet_front(a, log)
         front.stage("Opening the cleaned sound")
+        if is_direct(r["mpv_url"]) and r["mpv_url"].startswith(("http://", "https://")):
+            notes[r["mpv_url"]] = classify(r["mpv_url"], r["headers"])      # tells the tablet it is a playlist (HLS)
+            log(f"picture {r['mpv_url'][:90]}: {notes[r['mpv_url']]['kind']} - {notes[r['mpv_url']]['note']}")
         sess = FileSession(audio, prog["total_frames"], cfg["ffmpeg"], log)
-        return run_tablet(a, cfg, r, {}, sess, None, r["headers"], log, front, srv)
+        return run_tablet(a, cfg, r, notes, sess, None, r["headers"], log, front, srv)
     cmd = [cfg["mpv"], r["mpv_url"], f"--audio-file={audio}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}",
            f"--script={os.path.join(HERE, 'mpv_pip.lua')}"]
     if S["ontop"] and not a.pip:

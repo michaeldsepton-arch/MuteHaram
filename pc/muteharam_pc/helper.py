@@ -41,6 +41,26 @@ def tablet_info():
         return {}
 
 
+def tablet_active():
+    return _tablet_proc is not None and _tablet_proc.poll() is None
+
+
+def stop_tablet():
+    """Cancel "Send to the tablet": stop the session the tablet plays from (the tablet then says so)."""
+    global _tablet_proc
+    p, _tablet_proc = _tablet_proc, None
+    if p is not None and p.poll() is None:
+        try:
+            p.terminate()
+            p.wait(5)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+    clear_old_tablet_sessions()              # also one started some other way (an older helper ...)
+
+
 def preclean_command(item_id, meta):
     req = dict(meta.get("req") or {}, tablet=False, pip=False, start=0)
     cmd = play_command(req)
@@ -170,7 +190,7 @@ class Handler(BaseHTTPRequestHandler):
             total, watched = lib.space()
             return self._json(200, {"items": lib.items(), "runner": run.state(),
                                     "space_mb": total, "watched_mb": watched,
-                                    "tablet": tablet_info()})
+                                    "tablet": tablet_info(), "tablet_active": tablet_active()})
         return None
 
     def _library_post(self, req):
@@ -192,6 +212,8 @@ class Handler(BaseHTTPRequestHandler):
             lib.update(str(req["id"]), status="queued", error="")
         elif p == "/api/hold":
             run.hold(str(req["id"]))
+        elif p in ("/api/tablet-stop", "/tablet/stop"):
+            stop_tablet()
         elif p == "/api/delete-watched":
             return self._json(200, {"ok": True, "deleted": lib.delete_watched()})
         elif p == "/api/watched":
@@ -250,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "unknown"})
 
     def do_POST(self):
-        if self.path == "/queue/add" or self.path.startswith("/api/"):
+        if self.path in ("/queue/add", "/tablet/stop") or self.path.startswith("/api/"):
             # the library window or the extension; the special header makes a browser ask first (other sites can't)
             if not self._app_ok() or self.headers.get("X-MuteHaram") != "1":
                 return self._json(403, {"error": "not from MuteHaram"})
