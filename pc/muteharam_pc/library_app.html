@@ -43,6 +43,9 @@
   #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #26303a; color: var(--text);
            padding: 10px 16px; border-radius: 8px; border: 1px solid var(--line); opacity: 0; transition: opacity .3s; pointer-events: none; }
   #toast.show { opacity: 1; }
+  .sectionhead { display: flex; align-items: center; gap: 14px; }
+  .sectionhead h2 { flex: 1; }
+  #space { color: var(--dim); font-size: 13px; }
   #offline { display: none; background: #3a2422; color: #ffd9d5; padding: 10px 24px; }
 </style>
 </head>
@@ -51,16 +54,23 @@
 <header>
   <h1>MuteHaram Library</h1>
   <div id="state">Loading ...</div>
+  <div id="space"></div>
   <button id="toggle" class="primary">Start cleaning</button>
 </header>
 <main>
   <h2>Ready to watch</h2>
   <div id="ready" class="grid"></div>
+  <div id="watchedHead" class="sectionhead">
+    <h2>Watched <span class="help" id="watchedNote"></span></h2>
+    <button id="delWatched" class="small">Delete all watched</button>
+  </div>
+  <div id="watched" class="grid"></div>
   <h2>Queue (cleaned in this order, only while cleaning is started)</h2>
   <div id="queue"></div>
   <p class="help">To add a film or video: open it in Chrome, start it playing for a moment, then right-click the
     MuteHaram icon and choose <b>Add to the MuteHaram library (clean in advance)</b>. Only the cleaned sound is kept
-    (about 70 MB per hour); the picture comes from the website when you watch.</p>
+    (about 70 MB per hour); the picture comes from the website when you watch. A film moves to <b>Watched</b> once you
+    play it; delete its cleaned sound there when you are done to free the space.</p>
 </main>
 <div id="toast"></div>
 <script>
@@ -124,7 +134,25 @@ function render() {
   t.className = run.running ? "stop" : "primary";
   t.disabled = !run.running && !waiting;
 
-  const ready = items.filter((x) => x.status === "ready");
+  document.getElementById("space").textContent = `Cleaned sound on this PC: ${data.space_mb || 0} MB`;
+  const watched = items.filter((x) => x.status === "ready" && x.watched_at);
+  const wbox = document.getElementById("watched");
+  wbox.innerHTML = "";
+  document.getElementById("watchedHead").style.display = watched.length ? "" : "none";
+  document.getElementById("watchedNote").textContent =
+    `(their cleaned sound uses ${data.watched_mb || 0} MB; delete it when you no longer need it)`;
+  for (const x of watched) {
+    wbox.append(el("div", { class: "card" },
+      el("div", { class: "title" }, x.title || "(untitled)"),
+      el("div", { class: "meta" }, [fmt(x.duration), x.size_mb ? `${x.size_mb} MB` : "",
+                                    "watched " + new Date(x.watched_at * 1000).toLocaleDateString()].filter(Boolean).join(" · ")),
+      el("div", { class: "row" },
+        btn("Delete cleaned sound", async () => { if (confirm(`Delete the cleaned sound of "${x.title}" (${x.size_mb} MB)?`)) await api("/api/remove", { id: x.id }); }, "stop"),
+        btn("▶ Watch again", async () => { await api("/api/play", { id: x.id }); toast("Opening the player ..."); }),
+        btn("Send to tablet", async () => { await api("/api/play", { id: x.id, tablet: true }); toast("Open the MuteHaram app on the tablet"); }),
+        btn("Not watched yet", () => api("/api/watched", { id: x.id, watched: false })))));
+  }
+  const ready = items.filter((x) => x.status === "ready" && !x.watched_at);
   const rbox = document.getElementById("ready");
   rbox.innerHTML = "";
   if (!ready.length) rbox.append(el("div", { class: "empty" }, "Nothing ready yet."));
@@ -136,6 +164,7 @@ function render() {
       el("div", { class: "row" },
         btn("▶ Watch on this PC", async () => { await api("/api/play", { id: x.id }); toast("Opening the player ..."); }, "primary"),
         btn("Send to tablet", async () => { await api("/api/play", { id: x.id, tablet: true }); toast("Open the MuteHaram app on the tablet"); }),
+        btn("Mark watched", () => api("/api/watched", { id: x.id, watched: true })),
         btn("Remove", async () => { if (confirm(`Remove "${x.title}" and its cleaned sound?`)) await api("/api/remove", { id: x.id }); }))));
   }
 
@@ -177,6 +206,11 @@ async function refresh() {
     document.getElementById("offline").style.display = "block";
   }
 }
+document.getElementById("delWatched").addEventListener("click", async () => {
+  if (!confirm(`Delete the cleaned sound of every watched film (${data.watched_mb || 0} MB)?`)) return;
+  try { const r = await api("/api/delete-watched"); toast(`Deleted ${r.deleted} film(s)`); } catch (e) { toast("Problem: " + e.message); }
+  refresh();
+});
 document.getElementById("toggle").addEventListener("click", async () => {
   try {
     await api(data.runner && data.runner.running ? "/api/stop" : "/api/start");

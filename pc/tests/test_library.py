@@ -57,4 +57,13 @@ time.sleep(2.5)
 st = {x["title"]: x["status"] for x in lib.items()}
 print("after stop:", st, run.state())
 assert st["Film B"] == "paused" and not run.state()["running"] and run.proc is None
+# watched films: space shown, "delete all watched" frees it and keeps the rest
+import os as _os
+cid = next(x["id"] for x in lib.items() if x["title"] == "Film C")
+open(_os.path.join(lib.item_dir(cid), "audio.opus"), "wb").write(b"x" * 2_000_000)
+assert lib.space() == (2.0, 0.0), lib.space()
+lib.update(cid, watched_at=time.time())
+assert lib.space() == (2.0, 2.0)
+assert lib.delete_watched() == 1 and lib.space() == (0, 0)
+assert [x["title"] for x in lib.items()] == ["Film B"]
 print("LIBRARY TEST OK")

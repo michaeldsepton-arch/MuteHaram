@@ -79,6 +79,7 @@ class Library:
                                 eta_s=p.get("eta_s"), duration=p.get("duration") or m.get("duration"),
                                 error=m.get("error") or p.get("error") or "", stage=p.get("stage", ""),
                                 unclean_s=p.get("unclean_s", 0), mode=p.get("mode", ""),
+                                watched_at=m.get("watched_at"),
                                 size_mb=round(os.path.getsize(os.path.join(self.item_dir(i), "audio.opus")) / 1e6, 1)
                                 if ready else None))
             res.sort(key=lambda x: (x["order"], x["added"]))
@@ -96,6 +97,24 @@ class Library:
                         order=(max(orders) + 1) if orders else 1, status="queued")
             write_json(os.path.join(self.item_dir(item_id), "meta.json"), meta)
             return item_id
+
+    def space(self):
+        """Bytes of cleaned sound kept on this PC: (all, of films already watched)."""
+        total = watched = 0
+        for x in self.items():
+            if x["status"] == "ready" and x["size_mb"]:
+                total += x["size_mb"]
+                if x["watched_at"]:
+                    watched += x["size_mb"]
+        return round(total, 1), round(watched, 1)
+
+    def delete_watched(self):
+        n = 0
+        for x in self.items():
+            if x["status"] == "ready" and x["watched_at"]:
+                self.remove(x["id"])
+                n += 1
+        return n
 
     def update(self, item_id, **fields):
         with self.lock:

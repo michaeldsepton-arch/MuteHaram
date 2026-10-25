@@ -161,7 +161,9 @@ class Handler(BaseHTTPRequestHandler):
             lib, run = library()
             if self.headers.get("Origin") and not self._app_ok():
                 return self._json(403, {"error": "not allowed"})
-            return self._json(200, {"items": lib.items(), "runner": run.state()})
+            total, watched = lib.space()
+            return self._json(200, {"items": lib.items(), "runner": run.state(),
+                                    "space_mb": total, "watched_mb": watched})
         return None
 
     def _library_post(self, req):
@@ -181,12 +183,17 @@ class Handler(BaseHTTPRequestHandler):
             lib.remove(str(req["id"]))
         elif p == "/api/retry":
             lib.update(str(req["id"]), status="queued", error="")
+        elif p == "/api/delete-watched":
+            return self._json(200, {"ok": True, "deleted": lib.delete_watched()})
+        elif p == "/api/watched":
+            lib.update(str(req["id"]), watched_at=time.time() if req.get("watched", True) else None)
         elif p == "/api/rename":
             lib.update(str(req["id"]), title=str(req.get("title", ""))[:200])
         elif p == "/api/play":
             global _tablet_proc
             tablet = bool(req.get("tablet"))
             cmd = library_play_command(str(req["id"]), tablet, bool(req.get("pip")))
+            lib.update(str(req["id"]), watched_at=time.time())     # shown under "Watched", ready to delete
             if tablet and _tablet_proc is not None and _tablet_proc.poll() is None:
                 _tablet_proc.terminate()
                 try:
