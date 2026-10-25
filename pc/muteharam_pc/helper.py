@@ -32,6 +32,15 @@ def library():
     return LIB, RUNNER
 
 
+def tablet_info():
+    """What to type in the tablet app's Settings (the helper runs without a window, so the library shows it)."""
+    try:
+        from .stream_server import lan_addresses, load_or_create_token
+        return {"addresses": lan_addresses(), "token": load_or_create_token()}
+    except Exception:
+        return {}
+
+
 def preclean_command(item_id, meta):
     req = dict(meta.get("req") or {}, tablet=False, pip=False, start=0)
     req["mode"] = config.settings().get("preclean_mode") or "sam"
@@ -165,7 +174,8 @@ class Handler(BaseHTTPRequestHandler):
             from .sam_model import is_available as sam_ok
             return self._json(200, {"items": lib.items(), "runner": run.state(),
                                     "space_mb": total, "watched_mb": watched,
-                                    "model": config.settings().get("preclean_mode") or "sam", "sam_ready": sam_ok()})
+                                    "model": config.settings().get("preclean_mode") or "sam", "sam_ready": sam_ok(),
+                                    "tablet": tablet_info()})
         return None
 
     def _library_post(self, req):

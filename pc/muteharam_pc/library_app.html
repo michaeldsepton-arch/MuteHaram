@@ -81,6 +81,7 @@
     (about 70 MB per hour); the picture comes from the website when you watch. A film moves to <b>Watched</b> once you
     play it; delete its cleaned sound there when you are done to free the space.</p>
 </main>
+<footer id="tabletInfo" class="help" style="padding: 0 24px 24px"></footer>
 <div id="toast"></div>
 <script>
 "use strict";
@@ -147,6 +148,9 @@ function render() {
   t.className = run.running ? "stop" : "primary";
   t.disabled = !run.running && !waiting;
 
+  const ti = data.tablet || {};
+  document.getElementById("tabletInfo").textContent = ti.token
+    ? `Tablet app settings: PC address ${(ti.addresses || []).join(" or ")}  ·  token ${ti.token}` : "";
   document.getElementById("space").textContent = `Cleaned sound on this PC: ${data.space_mb || 0} MB`;
   const watched = items.filter((x) => x.status === "ready" && x.watched_at);
   const wbox = document.getElementById("watched");
