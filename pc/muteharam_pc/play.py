@@ -295,6 +295,9 @@ class TabletFront:
         return mode_route(self.hub)(q)
 
 
+GOVERNOR = None
+
+
 def run_preclean(a, r, session, problem, log):
     """Clean the whole sound into a.preclean (library): cleaned.pcm grows block by block (a stopped job carries on
     from there next time), then it becomes audio.opus. Progress goes to progress.json for the library window."""
@@ -330,14 +333,32 @@ def run_preclean(a, r, session, problem, log):
     save(total_frames=total, hop=hop, mode=session.mode, duration=session.duration, nblocks=nblocks,
          url=a.url, picture=r["mpv_url"], mpv_args=r.get("mpv_args") or [], headers=r.get("headers") or {},
          subs=list(a.sub), done=False, error="", stage="cleaning", unclean_s=prog.get("unclean_s", 0) if same_job else 0)
-    sess = session if done_blocks == 0 else session.remake(session.mode, done_blocks)
+    def remake(b):
+        s = session.remake(session.mode, b)
+        s.lookahead_blocks = 1           # one block at a time, so the cleaning can give way between blocks
+        return s
+
+    sess = session if done_blocks == 0 else remake(done_blocks)
+    sess.lookahead_blocks = 1
     if sess is not session:
         session.stop_work()
         session.close()
+    gov = GOVERNOR
+
+    def release():
+        if getattr(sess, "sam", None) is not None:
+            from .sam_model import shutdown
+            shutdown(sess.sam)               # the model loads again by itself for the next block
     log(f"pre-cleaning {nblocks} blocks ({session.duration / 60:.0f} min), starting at block {done_blocks + 1}")
     recent = []                                    # when the last blocks finished: the estimate follows the current speed
+    block_s = 5.0
     with open(pcm_path, "ab") as f:
         for b in range(done_blocks, nblocks):
+            if gov is not None and b > done_blocks:
+                gov.gate(block_s, release, lambda text: save(stage=text))
+                if gov.changed:
+                    recent = []                    # the speed changed: start the estimate afresh
+            tb = time.time()
             blk = None
             for attempt in range(4):
                 try:
@@ -354,14 +375,17 @@ def run_preclean(a, r, session, problem, log):
                     break
                 log(f"block {b + 1}: could not be cleaned, reopening the stream (try {attempt + 1}/3)")
                 time.sleep(3 + 5 * attempt)
-                sess = session.remake(session.mode, b)
+                sess = remake(b)
             if blk is None:                           # give up on this stretch: silent (never the music)
                 blk = np.zeros((hop, 2), np.int16)
                 save(unclean_s=prog.get("unclean_s", 0) + hop / SAMPLE_RATE)
                 if b + 1 < nblocks:
-                    sess = session.remake(session.mode, b + 1)
+                    sess = remake(b + 1)
             f.write(np.ascontiguousarray(blk, dtype=np.int16).tobytes())
             f.flush()
+            block_s = min(60.0, max(1.0, time.time() - tb))
+            if gov is not None and b == done_blocks:
+                gov.after_first_block()            # now the model is loaded: measure its graphics memory
             recent = (recent + [time.time()])[-11:]
             eta = None
             if len(recent) >= 3:                   # (the first block includes loading the model: not counted)
@@ -573,6 +597,11 @@ def run(argv=None):
     if a.user_agent:
         headers["User-Agent"] = a.user_agent
 
+    global GOVERNOR
+    if a.preclean:
+        from .library import GpuGovernor
+        GOVERNOR = GpuGovernor(log)
+        GOVERNOR.before_load()             # graphics memory in use BEFORE our model: tells ours from others'
     if a.mode == "sam":
         # start loading SAM Audio (about 30 s) right away, while the film's addresses are being looked at
         def warm():

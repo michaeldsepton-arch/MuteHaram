@@ -132,7 +132,8 @@ function render() {
   if (run.running && cur) {
     st.innerHTML = "";
     st.append("Cleaning ", el("b", {}, cur.title || "(untitled)"), ` — ${Math.round(cur.progress * 100)} %` +
-              (cur.eta_s ? `, about ${fmt(cur.eta_s)} left` : "") + ". The graphics card is in use.");
+              (cur.stage && cur.stage.startsWith("waiting") ? ". Waiting: another program is using the graphics card; it carries on by itself."
+               : (cur.eta_s ? `, about ${fmt(cur.eta_s)} left` : "") + ". It gives way by itself when another program needs the graphics card."));
   } else if (run.running) {
     st.textContent = "Starting ...";
   } else {
@@ -192,7 +193,11 @@ function render() {
   const tb = el("table", {});
   q.forEach((x, i) => {
     let label = "Waiting";
-    if (x.status === "processing") label = `Cleaning ${Math.round(x.progress * 100)} %` + (x.eta_s ? ` · about ${fmt(x.eta_s)} left` : "");
+    if (x.status === "processing") {
+      label = `Cleaning ${Math.round(x.progress * 100)} %` + (x.eta_s ? ` · about ${fmt(x.eta_s)} left` : "");
+      if (x.stage && x.stage.startsWith("waiting")) label = `Waiting at ${Math.round(x.progress * 100)} %: another program is using the graphics card (carries on by itself)`;
+      else if (x.stage && x.stage.startsWith("sharing")) label += " · sharing the graphics card with another program (slower)";
+    }
     else if (x.status === "held") label = `Paused for this film at ${Math.round(x.progress * 100)} % (press Resume; the rest of the queue carries on)`;
     else if (x.status === "paused" || (x.status === "queued" && x.progress > 0)) label = `Paused at ${Math.round(x.progress * 100)} % (carries on from there when cleaning is started)`;
     else if (x.status === "error") label = "Problem: " + (x.error || "unknown");

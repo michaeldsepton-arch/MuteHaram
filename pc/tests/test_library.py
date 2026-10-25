@@ -44,7 +44,7 @@ run.start()
 t0 = time.time()
 while time.time() - t0 < 30:
     st = {x["title"]: x["status"] for x in lib.items()}
-    if st["Film C"] == "ready" and st["Film B"] == "processing":
+    if st["Film C"] == "ready" and st["Film B"] == "processing" and lib.progress(b).get("progress"):
         break
     time.sleep(0.5)
 st = {x["title"]: x for x in lib.items()}
@@ -78,4 +78,36 @@ lib.update(cid, watched_at=time.time())
 assert lib.space() == (2.0, 2.0)
 assert lib.delete_watched() == 1 and lib.space() == (0, 0)
 assert [x["title"] for x in lib.items()] == ["Film B"]
+# giving way to other programs on the graphics card (fake card readings, no waiting)
+from muteharam_pc.library import GpuGovernor
+clock = [0.0]
+slept = []
+
+
+def fake_sleep(s):
+    slept.append(s)
+    clock[0] += s
+
+
+readings = {"now": (5.0, 1000.0)}            # (utilization %, memory MB) the card reports
+g = GpuGovernor(log=lambda *m: None, sample=lambda: readings["now"], sleep=fake_sleep, clock=lambda: clock[0])
+g.before_load()                              # desktop: 1000 MB
+readings["now"] = (5.0, 7400.0)
+g.after_first_block()                        # our model: 6400 MB
+assert g.ours == 6400.0
+stages = []
+released = []
+g.gate(5.0, lambda: released.append(1), stages.append)
+assert g.state == "full" and sum(slept) < 2 and not released, "a quiet card: full speed"
+slept.clear()
+readings["now"] = (25.0, 7600.0)             # a video playing elsewhere
+g.gate(5.0, lambda: released.append(1), stages.append)
+assert g.state == "light" and 5.0 in slept and not released, "light use: a rest after the block"
+# a heavy program starts (4 GB of its own), and stops again after a minute
+script = iter([(90.0, 11400.0)] * 3 + [(95.0, 5000.0)] * 9 + [(3.0, 1000.0)] * 30)
+g.sample = lambda: next(script)
+g.gate(5.0, lambda: released.append(1), stages.append)
+print("gpu governor:", stages, "released", len(released))
+assert released == [1] and g.state == "full" and g.changed
+assert any(s.startswith("waiting") for s in stages) and stages[-1] == "cleaning"
 print("LIBRARY TEST OK")

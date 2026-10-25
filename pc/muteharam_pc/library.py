@@ -346,3 +346,111 @@ class FileSession:
             os.unlink(self._tmp.name)
         except Exception:
             pass
+
+
+def gpu_sample():
+    """(utilization %, memory used MB) of the graphics card, or None if it can't be read."""
+    try:
+        out = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used", "--format=csv,noheader,nounits"],
+                             capture_output=True, text=True, timeout=10,
+                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0).stdout
+        u, m = out.strip().splitlines()[0].split(",")
+        return float(u), float(m)
+    except Exception:
+        return None
+
+
+class GpuGovernor:
+    """Lets the library cleaning give way to other programs on the graphics card.
+
+    Between blocks the cleaning is idle for a moment, so what the card does then is OTHER programs' work.
+    Windows can't say which program uses how much memory, so ours is measured: the memory in use before our
+    model is loaded vs. after its first block.
+      heavy use by others (busy card, or a lot of memory)  -> wait, and free our graphics memory if it lasts
+      light use (a video playing ...)                       -> keep going, with a rest after every block
+      quiet card                                            -> full speed
+    """
+    HEAVY_UTIL, LIGHT_UTIL = 40.0, 15.0        # % of the card used by others
+    OTHERS_MEM_MB = 2500.0                     # others using more than this (desktop + browser use ~1 GB)
+    QUIET_CHECKS = 3                           # this many quiet checks in a row (10 s apart) before carrying on
+    FREE_AFTER_S = 20.0                        # still busy after this long: free our graphics memory
+
+    def __init__(self, log=print, sample=gpu_sample, sleep=time.sleep, clock=time.time):
+        self.log, self.sample, self.sleep, self.clock = log, sample, sleep, clock
+        self.base = None                       # memory in use before our model was loaded
+        self.ours = 0.0                        # memory our model holds
+        self.state = "full"
+
+    def before_load(self):
+        s = self.sample()
+        self.base = s[1] if s else None
+
+    def after_first_block(self):
+        s = self.sample()
+        if s and self.base is not None:
+            self.ours = max(0.0, s[1] - self.base)
+
+    def others(self, loaded=True):
+        """(others' utilization, others' memory MB), measured while we are idle."""
+        vals = []
+        for _ in range(3):
+            s = self.sample()
+            if s:
+                vals.append(s)
+            self.sleep(0.3)
+        if not vals:
+            return 0.0, 0.0
+        util = sorted(v[0] for v in vals)[len(vals) // 2]
+        mem = max(v[1] for v in vals) - (self.ours if loaded else 0.0)
+        return util, max(0.0, mem)
+
+    def heavy(self, util, mem):
+        return util >= self.HEAVY_UTIL or mem >= self.OTHERS_MEM_MB
+
+    def gate(self, block_seconds, release, set_stage):
+        """Call between blocks. Returns when the next block may run (maybe after a rest or a long wait).
+        release() frees our graphics memory (the model reloads by itself when the next block needs it)."""
+        before = self.state
+        try:
+            self._gate(block_seconds, release, set_stage)
+        finally:
+            self.changed = self.state != before or self.waited
+
+    changed = False
+    waited = False
+
+    def _gate(self, block_seconds, release, set_stage):
+        self.waited = False
+        util, mem = self.others(loaded=True)
+        if not self.heavy(util, mem):
+            if util >= self.LIGHT_UTIL:
+                if self.state != "light":
+                    self.log(f"gpu: another program uses the card a little ({util:.0f}%): cleaning at half speed")
+                self.state = "light"
+                set_stage("sharing the graphics card with another program (slower)")
+                self.sleep(block_seconds)
+            else:
+                if self.state != "full":
+                    self.log("gpu: the card is free again: full speed")
+                    set_stage("cleaning")
+                self.state = "full"
+            return
+        self.log(f"gpu: another program needs the card (use {util:.0f}%, memory {mem:.0f} MB): cleaning waits")
+        self.state = "waiting"
+        self.waited = True
+        set_stage("waiting: another program is using the graphics card")
+        t0, freed, quiet = self.clock(), False, 0
+        while True:
+            self.sleep(10.0)
+            util, mem = self.others(loaded=not freed)
+            if not freed and self.clock() - t0 >= self.FREE_AFTER_S:
+                release()
+                freed = True
+                self.log("gpu: freed MuteHaram's graphics memory for the other program")
+                continue
+            quiet = quiet + 1 if not self.heavy(util, mem) else 0
+            if quiet >= self.QUIET_CHECKS:
+                self.log("gpu: the other program is done: cleaning carries on")
+                set_stage("cleaning")
+                self.state = "full"
+                return
