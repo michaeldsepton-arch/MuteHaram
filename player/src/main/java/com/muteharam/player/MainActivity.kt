@@ -84,6 +84,7 @@ class MainActivity : AppCompatActivity() {
             if (p != null && s != null && p.playbackState == Player.STATE_READY) {
                 resumeId = s.id
                 resumeMs = p.currentPosition
+                prefs.edit().putLong("resumeId", resumeId).putLong("resumeMs", resumeMs).apply()
             }
             ui.postDelayed(this, 2000)
         }
@@ -111,10 +112,8 @@ class MainActivity : AppCompatActivity() {
             textSize = 16f
             setPadding(32, 20, 32, 20)
             gravity = Gravity.CENTER
-            setOnClickListener {            // tap: try again, or play the old session that is waiting
-                pendingOld?.let { acceptedOldId = it.id; pendingOld = null }
-                currentId = -1L
-            }
+            isClickable = false             // a plain message never catches a tap meant for the player (pause ...)
+            isFocusable = false
         }
         root.addView(
             status,
@@ -167,14 +166,36 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (prefs.getString("addr", "").isNullOrBlank()) showSettings()
+        // closing the app (or the system closing it while the screen was off) must not lose the place in the film
+        resumeId = prefs.getLong("resumeId", -1L)
+        resumeMs = prefs.getLong("resumeMs", 0L)
+        // if the app ever crashes, say why the next time it opens (so it can be reported and fixed)
+        prefs.getString("lastCrash", null)?.let {
+            prefs.edit().remove("lastCrash").apply()
+            AlertDialog.Builder(this).setTitle("The player stopped unexpectedly last time")
+                .setMessage("Please send this to whoever set up MuteHaram:\n\n" + it.take(1500))
+                .setPositiveButton("OK", null).show()
+        }
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { t, e ->
+            try {
+                prefs.edit().putString("lastCrash", android.util.Log.getStackTraceString(e)).commit()
+            } catch (_: Throwable) {
+            }
+            previous?.uncaughtException(t, e)
+        }
     }
+
+    private var poller: Thread? = null
 
     override fun onStart() {
         super.onStart()
         running = true
         ui.removeCallbacks(remember)
         ui.post(remember)
-        Thread { pollLoop() }.apply { isDaemon = true; start() }
+        if (poller?.isAlive != true) {          // coming back quickly: the earlier loop is still running
+            poller = Thread { pollLoop() }.apply { isDaemon = true; start() }
+        }
     }
 
     override fun onStop() {
@@ -225,13 +246,32 @@ class MainActivity : AppCompatActivity() {
 
     // ------------------------------------------------------------------ talking to the PC
 
-    private fun setStatus(text: String?) {
+    /** A message. While the film plays it sits at the top, out of the way of the play/pause button.
+     *  Only messages that say "tap here" react to a tap (retry, or play the old session that is waiting). */
+    private fun setStatus(text: String?, tappable: Boolean = false) {
         ui.post {
             if (text == null) {
                 status.visibility = View.GONE
+                status.setOnClickListener(null)
+                status.isClickable = false
             } else {
                 status.text = text
                 status.visibility = View.VISIBLE
+                (status.layoutParams as FrameLayout.LayoutParams).let {
+                    it.gravity = if (player != null) (Gravity.TOP or Gravity.CENTER_HORIZONTAL) else Gravity.CENTER
+                    it.topMargin = if (player != null) 24 else 0
+                    status.layoutParams = it
+                }
+                if (tappable) {
+                    status.setOnClickListener {
+                        pendingOld?.let { o -> acceptedOldId = o.id; pendingOld = null }
+                        currentId = -1L
+                        setStatus("Trying again ...")
+                    }
+                } else {
+                    status.setOnClickListener(null)
+                    status.isClickable = false
+                }
             }
         }
     }
@@ -288,7 +328,7 @@ class MainActivity : AppCompatActivity() {
                                 setStatus(
                                     "The PC still has a session from " + (s.ageSeconds / 60) + " minutes ago." + "\n" +
                                         "For a fresh one: on the PC use the MuteHaram icon's menu, Send to the tablet." + "\n" +
-                                        "Or tap here to play the old one anyway."
+                                        "Or tap here to play the old one anyway.", tappable = true
                                 )
                             }
                         } else {
@@ -460,7 +500,7 @@ class MainActivity : AppCompatActivity() {
                     depth++
                 }
                 android.util.Log.e("MuteHaramPlayer", "playback error", error)
-                setStatus("Playback problem: " + error.errorCodeName + "\n" + (error.message ?: "") + why + "\n(tap here to try again)")
+                setStatus("Playback problem: " + error.errorCodeName + "\n" + (error.message ?: "") + why + "\n(tap here to try again)", tappable = true)
             }
 
             override fun onTracksChanged(tracks: Tracks) {

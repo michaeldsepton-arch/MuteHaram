@@ -103,6 +103,50 @@ assert diff < 400, "an unreadable part must play as the original audio"
 assert s.fallbacks >= 1
 s.close()
 
+# 2c. a stream that stalls (stops delivering but never breaks) is reconnected instead of hanging forever
+class Stalls(MediaSource):
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.starts = []
+
+    def decoder(self, start_seconds, log=None):
+        self.starts.append(start_seconds)
+        if len(self.starts) == 1:      # first connection: 3 s of sound, then nothing (but stays open)
+            code = ("import sys,time,numpy as np;sys.stdout.buffer.write((np.ones((44100*3,2),np.float32)*0.1).tobytes());"
+                    "sys.stdout.flush();time.sleep(600)")
+            p = subprocess.Popen([sys.executable, "-c", code], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, bufsize=0)
+            p.err_tail = []
+            return p
+        return super().decoder(start_seconds, log)
+
+
+src = Stalls(wav, ffmpeg=cfg["ffmpeg"], ffprobe=cfg["ffprobe"])
+logged = []
+s = Session(src, models_dir=cfg["models_dir"], log=logged.append, patience_s=60)
+s.STALL_S = 3.0
+import time as _t
+t0 = _t.time()
+audio = s.read_frames(0, 12 * SAMPLE_RATE)
+print(f"stall test: {(_t.time() - t0):.1f}s, decoder starts {len(src.starts)}, blocks marked bad {int(s.bad.sum())}")
+assert len(src.starts) >= 2 and any("reconnecting" in str(m) for m in logged), logged[-5:]
+assert int(s.bad[:2].sum()) == 0 and s.fallbacks == 0
+s.close()
+
+# 2d. closing a session while a player request is still reading from it must not crash (mode switch)
+import threading as _th
+src = MediaSource(wav, ffmpeg=cfg["ffmpeg"], ffprobe=cfg["ffprobe"])
+s = make(src)
+s.read_frames(0, 6 * SAMPLE_RATE)
+res = {}
+reader = _th.Thread(target=lambda: res.setdefault("a", s.read_frames(30 * SAMPLE_RATE, 40 * SAMPLE_RATE)))
+reader.start()
+_t.sleep(0.5)
+s.stop_work()
+s.close()                         # must wait for the reader, not unmap the cache under it
+reader.join(30)
+assert "a" in res and len(res["a"]) == 10 * SAMPLE_RATE
+print("close-while-reading test: ok")
+
 # 3. both modes run
 for mode in ("music", "speech"):
     src = MediaSource(wav, ffmpeg=cfg["ffmpeg"], ffprobe=cfg["ffprobe"])

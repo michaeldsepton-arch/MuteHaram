@@ -353,9 +353,9 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
     front.ready(hub, doc)
     log(f"tablet session ready: {kind} picture, cleaned audio on port {a.tablet_port} "
         f"({int(time.time() - front.t0)} s after pressing Send)")
-    log("Waiting for the tablet. (This window closes after 30 minutes without the tablet asking.)")
+    log("Waiting for the tablet. (This window closes after 4 hours without the tablet asking.)")
     try:
-        while time.time() - srv.last_request < 1800 or time.time() - doc["id"] / 1000 < 120:
+        while time.time() - srv.last_request < 4 * 3600 or time.time() - doc["id"] / 1000 < 120:
             time.sleep(5)
     except KeyboardInterrupt:
         pass

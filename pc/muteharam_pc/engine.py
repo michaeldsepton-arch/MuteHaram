@@ -216,6 +216,12 @@ class Session:
         self.want = max(0, min(start_block, self.nblocks - 1))   # block the player most recently asked for
         self.error = None
         self._stop = False
+        self._readers = 0                      # player requests reading from the cache right now
+        self._reading = False                  # the worker is waiting for the stream
+        self._last_bytes = time.time()
+        self._last_read = time.time()          # when the player last asked for sound
+        self._computing = False
+        threading.Thread(target=self._watchdog, name="engine-watchdog", daemon=True).start()
         self.thread = threading.Thread(target=self._work, name="engine", daemon=True)
         self.thread.start()
 
@@ -260,6 +266,17 @@ class Session:
         engine error) that stretch is SILENT (fallback="silence", the default: never let the music through) or the
         ORIGINAL audio (fallback="original"), so playback never freezes."""
         f1 = min(f1, self.total_frames)
+        with self.cv:
+            self._readers += 1
+            self._last_read = time.time()
+        try:
+            return self._read_frames(f0, f1)
+        finally:
+            with self.cv:
+                self._readers -= 1
+                self.cv.notify_all()
+
+    def _read_frames(self, f0, f1):
         out = []
         f = f0
         while f < f1:
@@ -272,7 +289,7 @@ class Session:
                 blk = self._raw_block(b, ex)
             lo = f - b * self.hop
             hi = min(f1 - b * self.hop, self.hop)
-            out.append(np.asarray(blk[lo:hi]))
+            out.append(np.array(blk[lo:hi]))     # a COPY: the cache file may be closed right after
             f = b * self.hop + hi
         return np.concatenate(out) if out else np.zeros((0, CHANNELS), np.int16)
 
@@ -339,7 +356,12 @@ class Session:
         # Let the worker finish the block it is on BEFORE the cache file is unmapped:
         # writing into an unmapped file would crash the whole program.
         self.thread.join(timeout=30)
-        if self.thread.is_alive():
+        # ... and only once no player request is still reading from it (that crashed the program after a mode switch)
+        with self.cv:
+            t0 = time.time()
+            while self._readers and time.time() - t0 < 60:
+                self.cv.wait(0.5)
+        if self.thread.is_alive() or self._readers:
             self.log("engine still busy at shutdown; leaving the cache file for later cleanup")
             return
         try:
@@ -385,7 +407,35 @@ class Session:
         self._buf_start = self._dec_end = need_s
         self._eof = False
 
+    STALL_S = 20.0
+    IDLE_RELEASE_S = 300.0
+
+    def _watchdog(self):
+        """A stream that stops delivering without breaking (a stalled download) would leave the player waiting
+        forever: after STALL_S without any sound, drop the connection; the reader then reopens the stream."""
+        while not self._stop:
+            time.sleep(2.0)
+            # nobody listening for a while (paused, screen off): give the graphics card back; it reloads when needed
+            sam = getattr(self, "sam", None)
+            if (sam is not None and sam.proc is not None and not self._computing
+                    and time.time() - self._last_read > self.IDLE_RELEASE_S):
+                from .sam_model import shutdown
+                self.log(f"nothing played for {self.IDLE_RELEASE_S / 60:.0f} min: SAM Audio released from the graphics card")
+                shutdown(sam)
+            if self._reading and self._dec is not None and time.time() - self._last_bytes > self.STALL_S:
+                self.log(f"source: no sound from the stream for {self.STALL_S:.0f}s, reconnecting")
+                self._last_bytes = time.time()
+                self._kill_decoder()
+
     def _read_until(self, e):
+        self._reading = True
+        self._last_bytes = time.time()
+        try:
+            self._read_until_inner(e)
+        finally:
+            self._reading = False
+
+    def _read_until_inner(self, e):
         limit = min(e, self.total_frames + SAMPLE_RATE)
         while self._dec_end < limit and not self._eof:
             dec = self._dec
@@ -400,6 +450,7 @@ class Session:
             a = np.frombuffer(raw, dtype=np.float32).reshape(-1, CHANNELS)
             self._buf = np.concatenate([self._buf, a])
             self._dec_end += len(a)
+            self._last_bytes = time.time()
 
     def _fill(self, s, e, need_s):
         """Make sure the decoded audio covers [need_s, e). A stream that stops early (a
@@ -468,7 +519,11 @@ class Session:
                     t0 = time.time()
                     x = self._window(s, e)
                     eff = (s - s_eff, self._window(s_eff, s_eff + length)) if s_eff != s else None
-                    cleaned = self._clean(x, b, eff)
+                    self._computing = True
+                    try:
+                        cleaned = self._clean(x, b, eff)
+                    finally:
+                        self._computing = False
                     if self._stop:
                         return
                     self.store[b * self.hop:(b + 1) * self.hop] = cleaned
@@ -518,6 +573,9 @@ class Session:
 
     def _sam_removal(self, x):
         """What SAM Audio takes out of one window [win, 2]: the window minus its music-free version."""
+        if self.sam.proc is None:                      # released while nothing was playing: load it again
+            from .sam_model import get_client
+            self.sam = get_client(self.log)
         return x - self.sam.remove_music(x)
 
     def _clean_bandit(self, x, b, eff=None):
