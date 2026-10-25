@@ -43,7 +43,6 @@ def tablet_info():
 
 def preclean_command(item_id, meta):
     req = dict(meta.get("req") or {}, tablet=False, pip=False, start=0)
-    req["mode"] = config.settings().get("preclean_mode") or "sam"
     cmd = play_command(req)
     return cmd + ["--preclean", LIB.item_dir(item_id)]
 
@@ -126,8 +125,6 @@ def play_command(req):
             cmd += ["--sub", str(sub)]
     if req.get("pip"):
         cmd += ["--pip"]
-    if req.get("mode") in ("music", "sam"):
-        cmd += ["--mode", req["mode"]]
     if req.get("direct"):
         cmd += ["--direct"]
     if req.get("tablet"):
@@ -171,10 +168,8 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get("Origin") and not self._app_ok():
                 return self._json(403, {"error": "not allowed"})
             total, watched = lib.space()
-            from .sam_model import is_available as sam_ok
             return self._json(200, {"items": lib.items(), "runner": run.state(),
                                     "space_mb": total, "watched_mb": watched,
-                                    "model": config.settings().get("preclean_mode") or "sam", "sam_ready": sam_ok(),
                                     "tablet": tablet_info()})
         return None
 
@@ -195,10 +190,6 @@ class Handler(BaseHTTPRequestHandler):
             lib.remove(str(req["id"]))
         elif p in ("/api/retry", "/api/resume"):
             lib.update(str(req["id"]), status="queued", error="")
-        elif p == "/api/model":
-            if req.get("model") not in ("sam", "music"):
-                return self._json(400, {"error": "unknown model"})
-            config.save_setting("preclean_mode", req["model"])
         elif p == "/api/hold":
             run.hold(str(req["id"]))
         elif p == "/api/delete-watched":

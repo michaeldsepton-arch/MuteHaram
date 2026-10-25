@@ -224,17 +224,6 @@ def tablet_kind(url, note_kind):
     return "progressive"
 
 
-def mode_route(hub):
-    """/mode?m=music|sam : switch the cleaning (answers once the new mode has sound ready)."""
-    def route(q):
-        want = (q.get("m") or [""])[0]
-        if want in ("music", "sam"):
-            if hub.switch(want) == want:   # answers only when the new mode has its first sound ready (can take a minute)
-                hub.cur.prepare()
-        return {"mode": hub.mode}
-    return route
-
-
 def stop_other_tablet_sessions(log):
     """A new "send to the tablet" replaces the old one: stop any older tablet session still running."""
     if os.name != "nt" or os.environ.get("MUTEHARAM_KEEP_OTHER_SESSIONS") == "1":   # (the variable is for tests)
@@ -289,11 +278,6 @@ class TabletFront:
                     "elapsed_s": int(time.time() - self.t0)}
         return dict(self.doc, mode=self.hub.mode, age_s=int(time.time() - self.doc["id"] / 1000))
 
-    def mode(self, q):
-        if self.hub is None:
-            return {"mode": ""}
-        return mode_route(self.hub)(q)
-
 
 GOVERNOR = None
 
@@ -346,9 +330,7 @@ def run_preclean(a, r, session, problem, log):
     gov = GOVERNOR
 
     def release():
-        if getattr(sess, "sam", None) is not None:
-            from .sam_model import shutdown
-            shutdown(sess.sam)               # the model loads again by itself for the next block
+        pass                                 # the standard model is small (about 1.6 GB): it stays loaded while waiting
     log(f"pre-cleaning {nblocks} blocks ({session.duration / 60:.0f} min), starting at block {done_blocks + 1}")
     recent = []                                    # when the last blocks finished: the estimate follows the current speed
     block_s = 5.0
@@ -454,7 +436,7 @@ def start_tablet_front(a, log):
     for attempt in range(10):                   # the port of a session that was just stopped may need a moment
         try:
             srv = make_server(front, host="0.0.0.0", port=a.tablet_port, token=load_or_create_token(),
-                              routes={"/session.json": front.session_json, "/mode": front.mode})
+                              routes={"/session.json": front.session_json})
             break
         except OSError:
             if attempt == 9:
@@ -545,8 +527,7 @@ def run(argv=None):
     ap.add_argument("--window", type=float, default=S["window"], help="AI window, seconds (more = better, slower)")
     ap.add_argument("--hop", type=float, default=S["hop"], help="seconds produced per window")
     ap.add_argument("--gain", type=float, default=S["gain"], help="1.0 = remove fully, 0.5 = halve it, 1.3 = push harder")
-    ap.add_argument("--mode", choices=["music", "sam"], default=None,
-                    help='"music" = the standard model; "sam" = SAM Audio (best, needs setup_sam.py)')
+    ap.add_argument("--mode", choices=["music"], default="music", help="(only the standard model remains)")
     ap.add_argument("--direct", action="store_true",
                     help="the addresses given are video streams (not web pages), whatever they look like")
     ap.add_argument("--pip", action="store_true", default=bool(S["pip"]),
@@ -574,18 +555,9 @@ def run(argv=None):
     a = ap.parse_args(argv)
     if a.direct:
         FORCE_DIRECT.update([a.url, a.audio_src, *a.alt])
-    if a.mode is None:        # not chosen in the extension: settings.json decides
-        a.mode = S["tablet_mode"] if (a.tablet and S.get("tablet_mode") in ("music", "sam")) else S["mode"]
-    if a.mode not in ("music", "sam"):
-        a.mode = "music"
     log = lambda *m: print(*m, flush=True)
     if a.library:
         return run_library(a, S, log)
-    if a.mode == "sam":
-        from .sam_model import is_available as sam_ok
-        if not sam_ok():
-            log("SAM Audio is not set up (run setup_sam.py): using the standard music removal instead")
-            a.mode = "music"
 
     cfg = config.load()
     headers = {}
@@ -602,15 +574,6 @@ def run(argv=None):
         from .library import GpuGovernor
         GOVERNOR = GpuGovernor(log)
         GOVERNOR.before_load()             # graphics memory in use BEFORE our model: tells ours from others'
-    if a.mode == "sam":
-        # start loading SAM Audio (about 30 s) right away, while the film's addresses are being looked at
-        def warm():
-            try:
-                from .sam_model import get_client
-                get_client(log)
-            except Exception as ex:
-                log(f"SAM Audio could not be loaded early: {ex!r}")
-        threading.Thread(target=warm, name="sam-warmup", daemon=True).start()
     front = tablet_srv = None
     if a.tablet:
         front, tablet_srv = start_tablet_front(a, log)
@@ -625,7 +588,7 @@ def run(argv=None):
         src = MediaSource(rr["media_url"], rr["headers"], cfg["ffmpeg"], cfg["ffprobe"])
         sess = Session(src, duration=rr["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
                        device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
-                       channels_mode=a.channels, mode=a.mode, intro_mute_s=S["sam_intro_mute_s"])
+                       channels_mode=a.channels, mode=a.mode)
         try:
             ok, why = src.probe(max(0.0, min(a.start, (rr["duration"] or 1e9) - 3)))
             if not ok:
@@ -637,7 +600,7 @@ def run(argv=None):
         sess.remake = lambda m, start_block=0: Session(src, duration=sess.duration, window_s=a.window, hop_s=a.hop,
                                         music_gain=a.gain, device="cpu" if a.cpu else None,
                                         models_dir=cfg["models_dir"], log=log, channels_mode=a.channels, mode=m,
-                                        start_block=start_block, intro_mute_s=S["sam_intro_mute_s"])
+                                        start_block=start_block)
         return sess
 
     # Look at every candidate address and try the most promising first: a main ("master") playlist
@@ -673,8 +636,7 @@ def run(argv=None):
         attempts.append(("the web page (yt-dlp)", lambda: resolve(a.page, headers, cfg, log, a.sub_langs)))
     errors = []
     if front:
-        front.stage("Loading SAM Audio and opening the sound (about a minute)" if a.mode == "sam"
-                    else "Loading the cleaning model and opening the sound")
+        front.stage("Loading the cleaning model and opening the sound")
     for label, make in attempts:
         try:
             session = build(make())
@@ -706,9 +668,8 @@ def run(argv=None):
     if session is not None:
         hub = SessionHub(session, session.remake)
         session = hub                      # closing later closes whichever session is current
-        srv = make_server(hub, routes={"/mode": mode_route(hub)})
+        srv = make_server(hub)
         audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"
-        mode_port = srv.server_address[1]
         log("cleaned audio at", audio_url)
     if a.no_player:
         if problem:
@@ -721,10 +682,7 @@ def run(argv=None):
 
     cmd = [cfg["mpv"], r["mpv_url"]]
     if problem is None:
-        cmd += [f"--audio-file={audio_url}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}",
-                f"--script={os.path.join(HERE, 'mpv_mode.lua')}",
-                f"--script-opts-append=muteharam-mode-port={mode_port}",
-                f"--script-opts-append=muteharam-mode={hub.mode}"]
+        cmd += [f"--audio-file={audio_url}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}"]
     else:
         # The AI engine could not start (no GPU driver? model missing?): still play the video.
         why = " ".join(str(problem).split())[:160]

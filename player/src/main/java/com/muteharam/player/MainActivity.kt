@@ -143,7 +143,6 @@ class MainActivity : AppCompatActivity() {
             textSize = 15f
             setPadding(28, 16, 28, 16)
             visibility = View.GONE
-            setOnClickListener { switchMode() }
         }
         root.addView(
             modeButton,
@@ -364,9 +363,8 @@ class MainActivity : AppCompatActivity() {
 
     private fun showMode(mode: String) {
         modeButton.text = when (mode) {
-            "precleaned" -> "Sound: CLEANED IN ADVANCE on the PC (library)"
-            "sam" -> "Sound: MUSIC REMOVED, SAM Audio  (tap: switch to standard)"
-            else -> "Sound: MUSIC REMOVED, standard  (tap: switch to SAM Audio)"
+            "precleaned" -> "Sound: cleaned in advance on the PC (library)"
+            else -> "Sound: music removed by the PC"
         }
         refreshOverlay()
     }
@@ -376,59 +374,6 @@ class MainActivity : AppCompatActivity() {
         val show = controlsVisible || player == null
         gearButton.visibility = if (show) View.VISIBLE else View.GONE
         modeButton.visibility = if (show && current != null) View.VISIBLE else View.GONE
-    }
-
-    /** Ask the PC to clean in the other mode, then play again from the same spot. */
-    @Volatile private var switching = false
-
-    private fun switchMode() {
-        if (switching) {
-            setStatus("Still switching, please wait. It continues by itself when the new sound is ready.")
-            ui.postDelayed({ setStatus(null) }, 3000)
-            return
-        }
-        val s = current ?: return
-        if (s.mode == "precleaned") {
-            setStatus("This film was cleaned in advance in the library, so its sound can't be switched here.")
-            ui.postDelayed({ setStatus(null) }, 4000)
-            return
-        }
-        val want = if (s.mode == "sam") "music" else "sam"
-        val label = if (want == "sam") "SAM Audio" else "the standard music removal"
-        val host = curHost
-        val token = curToken
-        switching = true
-        player?.pause()                                   // the picture waits for the new sound
-        val t0 = System.currentTimeMillis()
-        val ticker = object : Runnable {
-            override fun run() {
-                if (!switching) return
-                setStatus("Switching to " + label + ". Paused until it is ready, please wait ... " + (System.currentTimeMillis() - t0) / 1000 + " s")
-                ui.postDelayed(this, 1000)
-            }
-        }
-        ui.post(ticker)
-        Thread {
-            try {
-                val answer = httpGet("http://" + host + ":47804/mode?m=" + want + "&t=" + URLEncoder.encode(token, "UTF-8"), 240000)
-                switching = false
-                if (org.json.JSONObject(answer).optString("mode") != want) {
-                    ui.post { player?.play() }
-                    setStatus("The PC could not switch to that mode (is the better model installed there? run setup_pc.py)")
-                    ui.postDelayed({ setStatus(null) }, 5000)
-                    return@Thread
-                }
-                ui.post {
-                    val pos = (player?.currentPosition ?: 0L) / 1000.0
-                    play(s.copy(mode = want, startSeconds = pos), host, token)
-                }
-            } catch (e: Exception) {
-                switching = false
-                ui.post { player?.play() }
-                setStatus("Could not switch the sound: " + (e.message ?: e.javaClass.simpleName))
-                ui.postDelayed({ setStatus(null) }, 4000)
-            }
-        }.start()
     }
 
     private fun play(s: SessionInfo, host: String, token: String, withSubs: Boolean = true) {

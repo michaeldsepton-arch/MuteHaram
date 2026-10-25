@@ -5,8 +5,7 @@ How it fits together
   * A media URL (or file) is decoded by ffmpeg to 44.1 kHz stereo float.
   * A worker thread runs the TIGER network on the GPU over sliding windows, keeping
     only the centre of each window (so every kept sample has `margin` seconds of
-    context on both sides), and subtracts the music estimate ("music" mode = the standard model).
-    "sam" mode uses SAM Audio instead (a separate program, see sam_model.py) on overlapping windows.
+    context on both sides), and subtracts the music estimate.
   * The cleaned audio is stored block by block (a block = one hop).
   * server.py exposes it as a normal seekable WAV file over local HTTP; mpv plays the
     original video with that WAV as its audio track. Because this is on-demand and
@@ -147,20 +146,12 @@ class MediaSource:
         return proc
 
 
-# modes that work on overlapping windows blended smoothly: mode -> (window, block length) in seconds
-BLEND = {"sam": (16.0, 12.0)}
-BLEND_HOP = {m: v[1] for m, v in BLEND.items()}
-LEAD_IN_S = 3.0
-
-
 class Session:
     def __init__(self, source, duration=None, window_s=10.0, hop_s=6.0, lookahead_s=150.0,
                  music_gain=1.0, device=None, models_dir=None, log=print,
                  channels_mode="auto", patience_s=45.0, mode="music", start_block=0,
-                 intro_mute_s=0.0, fallback="silence"):
-        assert mode in ("music", "sam")
-        if mode in BLEND_HOP:
-            window_s, hop_s = BLEND[mode]
+                 fallback="silence"):
+        assert mode == "music"
         assert window_s > hop_s > 0
         self.src = source
         self.log = log
@@ -172,22 +163,10 @@ class Session:
         self.win = int(round(window_s * SAMPLE_RATE))
         self.margin = (self.win - self.hop) // 2
         self.win = self.hop + 2 * self.margin
-        self.intro_mute = intro_mute_s if mode == "sam" else 0.0
-        self._bprev = None
-        if mode in BLEND_HOP:
-            # windows overlap by half and are blended smoothly (no hard seams): window b covers [b*hop, b*hop + 2*hop)
-            self.margin = 0
-            self.win = int(round(window_s * SAMPLE_RATE))
         self.nblocks = -(-self.total_frames // self.hop)
         self.lookahead_blocks = max(2, int(lookahead_s / hop_s))
 
-        if mode == "sam":
-            from .model import pick_device
-            from .sam_model import get_client
-            self.net, self.device, self.target = None, pick_device(device), None
-            self.sam = get_client(log)                   # a separate program holds the model (own environment)
-        else:
-            self.net, self.device, self.target = load_network("music", models_dir, device)
+        self.net, self.device, self.target = load_network("music", models_dir, device)
         # "stereo": run the network on left and right separately (better stereo, 2x work);
         # "mono": run it once on the mix. auto = stereo when a GPU is available.
         self.stereo_sep = channels_mode == "stereo" or (channels_mode == "auto" and self.device.type == "cuda")
@@ -307,43 +286,18 @@ class Session:
             out[: min(len(raw), self.hop)] = raw[: self.hop]
         return out
 
-    def want_position(self, new_mode):
-        """The block the player is at, in the units of a session running `new_mode` (their hop sizes differ)."""
-        hop_new = int(round(BLEND_HOP.get(new_mode, 6.0) * SAMPLE_RATE))
-        return (self.want * self.hop) // hop_new
-
     def stop_work(self):
         """Stop computing (and reading the source) at once, but keep the finished audio readable."""
         self._stop = True
         with self.cv:
             self.cv.notify_all()
         self._kill_decoder()
-        self._release_gpu()
-
-    def release_models(self):
-        """Drop this session's hold on the graphics card (after stop_work; its finished audio stays readable)."""
-        self.net = None
-        try:
-            from . import model as _model
-            _model._NET_CACHE.clear()
-            import gc
-            gc.collect()
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-
-    def _release_gpu(self):
-        if self.mode == "sam":
-            from .sam_model import shutdown
-            shutdown(self.sam)              # give the graphics card back at once (only OUR worker, never a newer one)
 
     def close(self):
         self._stop = True
         with self.cv:
             self.cv.notify_all()
         self._kill_decoder()
-        self._release_gpu()
         # Let the worker finish the block it is on BEFORE the cache file is unmapped:
         # writing into an unmapped file would crash the whole program.
         self.thread.join(timeout=30)
@@ -399,20 +353,12 @@ class Session:
         self._eof = False
 
     STALL_S = 20.0
-    IDLE_RELEASE_S = 300.0
 
     def _watchdog(self):
         """A stream that stops delivering without breaking (a stalled download) would leave the player waiting
         forever: after STALL_S without any sound, drop the connection; the reader then reopens the stream."""
         while not self._stop:
             time.sleep(2.0)
-            # nobody listening for a while (paused, screen off): give the graphics card back; it reloads when needed
-            sam = getattr(self, "sam", None)
-            if (sam is not None and sam.proc is not None and not self._computing
-                    and time.time() - self._last_read > self.IDLE_RELEASE_S):
-                from .sam_model import shutdown
-                self.log(f"nothing played for {self.IDLE_RELEASE_S / 60:.0f} min: SAM Audio released from the graphics card")
-                shutdown(sam)
             if self._reading and self._dec is not None and time.time() - self._last_bytes > self.STALL_S:
                 self.log(f"source: no sound from the stream for {self.STALL_S:.0f}s, reconnecting")
                 self._last_bytes = time.time()
@@ -496,23 +442,11 @@ class Session:
                 e = s + self.win
                 bad = True
                 dt = 0.0
-                # Where the model starts right here (first block, after a skip or a switch) the first seconds of its
-                # window have no context before them and come out worse: give it a few seconds of lead-in.
-                # At the very end a window of mostly silence is just as bad: use one that ends exactly at the end.
-                ctx = 0
-                if self.mode in BLEND_HOP and s > 0 and (self._bprev is None or self._bprev[0] != b - 1):
-                    ctx = min(int(LEAD_IN_S * SAMPLE_RATE), s)
-                length = e - s + ctx
-                s_eff = s - ctx
-                if self.mode in BLEND_HOP and e > self.total_frames and self.total_frames >= length:
-                    s_eff = self.total_frames - length
-                if self._fill(s_eff, s_eff + length, max(0, s_eff)):
+                if self._fill(s, e, max(0, s)):
                     t0 = time.time()
-                    x = self._window(s, e)
-                    eff = (s - s_eff, self._window(s_eff, s_eff + length)) if s_eff != s else None
                     self._computing = True
                     try:
-                        cleaned = self._clean(x, b, eff)
+                        cleaned = self._clean(self._window(s, e))
                     finally:
                         self._computing = False
                     if self._stop:
@@ -545,46 +479,9 @@ class Session:
                     last = b
                 time.sleep(0.5)
 
-    def _sam_removal(self, x):
-        """What SAM Audio takes out of one window [win, 2]: the window minus its music-free version."""
-        if self.sam.proc is None:                      # released while nothing was playing: load it again
-            from .sam_model import get_client
-            self.sam = get_client(self.log)
-        return x - self.sam.remove_music(x)
-
-    def _clean_blend(self, x, b, eff=None):
-        hop = self.hop
-        xr = eff[1] if eff else x
-        rem = self._sam_removal(xr)                        # for window b
-        if eff:                                            # line the shifted window up with window b
-            sh = eff[0]
-            al = np.zeros((self.win, CHANNELS), np.float32)
-            m = min(self.win, len(rem) - sh)
-            al[:m] = rem[sh:sh + m]
-            rem = al
-        prev = self._bprev
-        ov = self.win - hop                                # the part of this window that the previous window also covers
-        if prev is not None and prev[0] == b - 1:
-            n = np.arange(ov, dtype=np.float32)
-            up = np.sin(0.5 * np.pi * (n + 0.5) / ov) ** 2           # raised-cosine blend of the two overlapping windows
-            est = rem[:hop].copy()
-            est[:ov] = prev[1][hop:hop + ov] * (1.0 - up)[:, None] + rem[:ov] * up[:, None]
-        else:
-            est = rem[:hop]                                # first block after a start or a skip
-        self._bprev = (b, rem)
-        y = x[:hop] - self.gain * est
-        if b == 0 and self.intro_mute > 0:                 # the first seconds of a film have no context: keep them quiet
-            m = min(hop, int(self.intro_mute * SAMPLE_RATE))
-            fade = min(m, SAMPLE_RATE)
-            y[:m - fade] = 0.0
-            y[m - fade:m] *= (np.arange(fade, dtype=np.float32) / fade)[:, None]
-        return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
-
     @torch.no_grad()
-    def _clean(self, x, b=None, eff=None):
+    def _clean(self, x):
         """x: [win, 2] float32 -> cleaned centre [hop, 2] int16."""
-        if self.mode in BLEND_HOP:
-            return self._clean_blend(x, b, eff)
         c = slice(self.margin, self.margin + self.hop)
         if self.stereo_sep:
             t = torch.from_numpy(np.ascontiguousarray(x.T)).to(self.device)[:, None, :]   # [2,1,win]
@@ -598,9 +495,7 @@ class Session:
 
 
 class SessionHub:
-    """What the audio server serves. Holds ONE cleaning Session at a time and can swap it for the other mode
-    ("music" = the standard model, "sam" = SAM Audio) while the player keeps its connection: the file
-    has the same length either way, the player just asks for the sound again from where it is."""
+    """What the audio server serves: the current cleaning Session (or a finished file from the library)."""
 
     def __init__(self, session, remake):
         self.cur = session
@@ -627,37 +522,6 @@ class SessionHub:
                 return out
             # the mode was switched while we were reading: what we got may be from the old mode; ask the new one
         return self.cur.read_frames(f0, f1)
-
-    def switch(self, mode):
-        """Start cleaning in `mode`. Returns the mode now active (unchanged on failure)."""
-        with self.lock:
-            if mode == self.cur.mode:
-                return self.cur.mode
-            old = self.cur
-            if "sam" in (mode, old.mode):
-                old.stop_work()              # SAM Audio needs most of the graphics memory: nothing else may hold it
-                old.release_models()
-            try:
-                new = self.remake(mode, old.want_position(mode))
-            except Exception as ex:
-                self.log(f"could not switch to {mode}: {ex!r}")
-                if old._stop:
-                    try:
-                        new = self.remake(old.mode, old.want_position(old.mode))
-                    except Exception as ex2:
-                        self.log(f"could not go back to {old.mode} either: {ex2!r}")
-                        return old.mode
-                    self.cur = new
-                    threading.Timer(15.0, old.close).start()
-                    return new.mode
-                return old.mode
-            self.cur = new
-            self.log(f"cleaning mode is now: {mode}")
-            # the old session must stop competing for the graphics card and the stream RIGHT NOW; its finished
-            # audio stays readable for a while (requests may still be reading it), then it is closed for good
-            old.stop_work()
-            threading.Timer(15.0, old.close).start()
-            return mode
 
     def close(self):
         self.cur.close()

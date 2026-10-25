@@ -184,7 +184,7 @@ class Runner:
                     p.kill()
                 except Exception:
                     pass
-            if os.name == "nt":                  # the SAM Audio worker it started must go too
+            if os.name == "nt":                  # anything it started must go too
                 subprocess.run(["taskkill", "/F", "/T", "/PID", str(p.pid)], capture_output=True)
 
     def state(self):

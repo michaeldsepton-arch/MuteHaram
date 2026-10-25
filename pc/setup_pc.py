@@ -127,13 +127,6 @@ def setup_python(args):
         run([py, "-m", "pip", "install", "torch", "--index-url", f"https://download.pytorch.org/whl/{index}"])
     say("Installing the other Python packages")
     run([py, "-m", "pip", "install", "-r", os.path.join(HERE, "requirements.txt")])
-    # torchaudio (needed by SAM Audio): the same version as torch, from the same place
-    v = subprocess.run([py, "-c", "import torch;print(torch.__version__.split('+')[0])"], capture_output=True, text=True)
-    if v.returncode == 0 and v.stdout.strip():
-        r = subprocess.run([py, "-m", "pip", "install", f"torchaudio=={v.stdout.strip()}",
-                            "--index-url", f"https://download.pytorch.org/whl/{index}"])
-        if r.returncode != 0:
-            print("   (torchaudio could not be installed: SAM Audio will not work)")
     return py
 
 

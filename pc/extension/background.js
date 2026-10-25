@@ -169,13 +169,7 @@ async function post(path, body) {
 // Right-click the toolbar icon -> "small window" opens the player as a corner picture-in-picture.
 try {
   chrome.runtime.onInstalled.addListener(() => {
-    chrome.storage.local.get("mode").then((v) => {
-      const cur = v.mode === "sam" ? "sam" : "music";
-      chrome.contextMenus.create({ id: "muteharam-mode-music", type: "radio", checked: cur === "music",
-        title: "Cleaning: remove the MUSIC (standard, fastest)", contexts: ["action"] });
-      chrome.contextMenus.create({ id: "muteharam-mode-sam", type: "radio", checked: cur === "sam",
-        title: "Cleaning: remove the MUSIC with SAM Audio (best; needs setup_sam.py)", contexts: ["action"] });
-    });
+    chrome.storage.local.remove("mode");        // (left over from when there were several cleaning models)
     chrome.contextMenus.create({
       id: "muteharam-pip", title: "Open in a small always-on-top window", contexts: ["action"],
     });
@@ -193,8 +187,6 @@ try {
     });
   });
   chrome.contextMenus.onClicked.addListener((info, tab) => {
-    if (info.menuItemId === "muteharam-mode-music") chrome.storage.local.set({ mode: "music" });
-    if (info.menuItemId === "muteharam-mode-sam") chrome.storage.local.set({ mode: "sam" });
     if (info.menuItemId === "muteharam-pip" && tab) openInPlayer(tab, true);
     if (info.menuItemId === "muteharam-live" && tab) startLive(tab);
     if (info.menuItemId === "muteharam-tablet" && tab) openInPlayer(tab, false, true);
@@ -290,7 +282,6 @@ async function openInPlayer(tab, pip, tablet, queue) {
   }
   try {
     if (tablet) payload.tablet = true;
-    { const m = (await chrome.storage.local.get("mode")).mode; payload.mode = m === "sam" ? "sam" : "music"; }
     const r = await post("/play", payload);
     if (!r.ok) throw new Error("helper said " + r.status);
     pausePage(tab.id);

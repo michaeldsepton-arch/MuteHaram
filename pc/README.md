@@ -162,29 +162,16 @@ picture directly and the cleaned sound from this PC over Wi-Fi (only the sound c
    are on the tablet. The PC window can stay minimised. A new "Send to the tablet" replaces the old one.
 5. The PC must stay on and connected while you watch. If Windows asks about the firewall, allow private networks.
 
-## Choosing the cleaning: standard model or SAM Audio
+## The cleaning model
 
-Right-click the MuteHaram toolbar icon: two radio choices set the cleaning for the PC player and for
-"Send to the tablet":
-
-* **Remove the MUSIC (standard, fastest)**: the TIGER-DnR model. Light on the graphics card.
-* **Remove the MUSIC with SAM Audio (best)**: Meta's SAM Audio, told to take out "background music". Clearly better on
-  film scores; uses about 6 GB of graphics memory and runs about twice as fast as real time on a GTX 1070.
-  Set it up once with `python setup_sam.py` (needs a free Hugging Face account with access to facebook/sam-audio-small).
-
-The choice is remembered.
-
-### Switching while you watch
-
-* **PC player (mpv):** press **C**, or click the button in the controls bar (the "voice" icon). The picture pauses until
-  the new cleaning has sound ready, then carries on from the same spot.
-* **Tablet:** tap the mode button at the top left of the picture.
+MuteHaram uses one model, TIGER-DnR ("the standard model"): light on the graphics card (about 1.6 GB) and faster than
+real time. (SAM Audio and Bandit v2 were tried and removed: they did not do better on real films.)
 
 ### Cleaning in advance: the MuteHaram Library
 
 Double-click **MuteHaram Library** (desktop shortcut, or `pc\MuteHaram Library.bat`). Add films from Chrome with the
 MuteHaram icon's menu: **Add to the MuteHaram library (clean in advance, watch later)**. Press **Start cleaning** when
-the graphics card may be used; **Stop** frees it at once and the job carries on from there later. Finished films play
+the graphics card may be used; it also gives way by itself while another program uses the card; **Pause** frees it at once and the job carries on from there later. Finished films play
 on the PC or the tablet without waiting and without the graphics card. Only the cleaned sound is kept (about 70 MB per
 hour); delete it under **Watched** when you are done.
 
