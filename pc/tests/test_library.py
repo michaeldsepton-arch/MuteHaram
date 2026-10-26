@@ -100,14 +100,21 @@ released = []
 g.gate(5.0, lambda: released.append(1), stages.append)
 assert g.state == "full" and sum(slept) < 2 and not released, "a quiet card: full speed"
 slept.clear()
-readings["now"] = (25.0, 7600.0)             # a video playing elsewhere
+readings["now"] = (100.0, 7900.0)            # a video playing in the browser: busy card, little memory
 g.gate(5.0, lambda: released.append(1), stages.append)
-assert g.state == "light" and 5.0 in slept and not released, "light use: a rest after the block"
+assert g.state == "light" and 5.0 in slept and not released, "a busy card alone never makes it wait, only slower"
 # a heavy program starts (4 GB of its own), and stops again after a minute
 script = iter([(90.0, 11400.0)] * 3 + [(95.0, 5000.0)] * 9 + [(3.0, 1000.0)] * 30)
 g.sample = lambda: next(script)
-g.gate(5.0, lambda: released.append(1), stages.append)
+g.gate(5.0, lambda: released.append(1) or True, stages.append)
 print("gpu governor:", stages, "released", len(released))
 assert released == [1] and g.state == "full" and g.changed
 assert any(s.startswith("waiting") for s in stages) and stages[-1] == "cleaning"
+# the standard model can't be freed: while waiting it must still count its own memory as its own (never wait forever)
+script = iter([(90.0, 11400.0)] * 3 + [(95.0, 11400.0)] * 9 + [(3.0, 7400.0)] * 30)
+g.sample = lambda: next(script)
+stages.clear()
+clock[0] = 0.0
+g.gate(5.0, lambda: False, stages.append)
+assert g.state == "full" and stages[-1] == "cleaning" and clock[0] < 200, (stages, clock[0])
 print("LIBRARY TEST OK")

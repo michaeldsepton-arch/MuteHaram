@@ -330,7 +330,7 @@ def run_preclean(a, r, session, problem, log):
     gov = GOVERNOR
 
     def release():
-        pass                                 # the standard model is small (about 1.6 GB): it stays loaded while waiting
+        return False                         # the standard model is small (about 1.6 GB): it stays loaded while waiting
     log(f"pre-cleaning {nblocks} blocks ({session.duration / 60:.0f} min), starting at block {done_blocks + 1}")
     recent = []                                    # when the last blocks finished: the estimate follows the current speed
     block_s = 5.0

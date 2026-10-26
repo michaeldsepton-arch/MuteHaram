@@ -366,12 +366,13 @@ class GpuGovernor:
     Between blocks the cleaning is idle for a moment, so what the card does then is OTHER programs' work.
     Windows can't say which program uses how much memory, so ours is measured: the memory in use before our
     model is loaded vs. after its first block.
-      heavy use by others (busy card, or a lot of memory)  -> wait, and free our graphics memory if it lasts
-      light use (a video playing ...)                       -> keep going, with a rest after every block
-      quiet card                                            -> full speed
+      another program holding a lot of graphics memory (AI work, games)  -> wait (free our memory if we can)
+      the card very busy (but little memory: a video playing ...)       -> keep going, with a rest after each block
+      otherwise                                                         -> full speed
+    Usage alone never makes it wait: playing a video in the browser can show 100% for moments.
     """
-    HEAVY_UTIL, LIGHT_UTIL = 40.0, 15.0        # % of the card used by others
-    OTHERS_MEM_MB = 2500.0                     # others using more than this (desktop + browser use ~1 GB)
+    LIGHT_UTIL = 60.0                          # % of the card busy with others' work -> half speed
+    OTHERS_MEM_MB = 2500.0                     # others holding more than this (desktop + browser use about 1 GB)
     QUIET_CHECKS = 3                           # this many quiet checks in a row (10 s apart) before carrying on
     FREE_AFTER_S = 20.0                        # still busy after this long: free our graphics memory
 
@@ -405,7 +406,7 @@ class GpuGovernor:
         return util, max(0.0, mem)
 
     def heavy(self, util, mem):
-        return util >= self.HEAVY_UTIL or mem >= self.OTHERS_MEM_MB
+        return mem >= self.OTHERS_MEM_MB
 
     def gate(self, block_seconds, release, set_stage):
         """Call between blocks. Returns when the next block may run (maybe after a rest or a long wait).
@@ -439,15 +440,18 @@ class GpuGovernor:
         self.state = "waiting"
         self.waited = True
         set_stage("waiting: another program is using the graphics card")
-        t0, freed, quiet = self.clock(), False, 0
+        t0, freed, tried, quiet = self.clock(), False, False, 0
         while True:
             self.sleep(10.0)
             util, mem = self.others(loaded=not freed)
-            if not freed and self.clock() - t0 >= self.FREE_AFTER_S:
-                release()
-                freed = True
-                self.log("gpu: freed MuteHaram's graphics memory for the other program")
-                continue
+            if not freed and not tried and self.clock() - t0 >= self.FREE_AFTER_S:
+                tried = True
+                # release() says whether it really freed anything (the standard model is small and stays loaded;
+                # counting its memory as "another program" again would make the cleaning wait forever)
+                freed = bool(release())
+                if freed:
+                    self.log("gpu: freed MuteHaram's graphics memory for the other program")
+                    continue
             quiet = quiet + 1 if not self.heavy(util, mem) else 0
             if quiet >= self.QUIET_CHECKS:
                 self.log("gpu: the other program is done: cleaning carries on")
