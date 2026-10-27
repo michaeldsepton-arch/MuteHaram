@@ -28,6 +28,8 @@
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
   .title { font-weight: 600; word-break: break-word; }
+  .pen { background: none; border: none; padding: 0 4px; color: var(--dim); font-size: 15px; cursor: pointer; }
+  .pen:hover { color: var(--accent); }
   .meta { color: var(--dim); font-size: 13px; margin: 3px 0 10px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
   table { width: 100%; border-collapse: collapse; }
@@ -113,9 +115,15 @@ function el(tag, attrs, ...kids) {
   for (const k of kids) e.append(k);
   return e;
 }
-function rename(x) {
-  const t = prompt("New name (for example: Black Bird — S1 E2)", x.title || "");
-  if (t !== null && t.trim()) api("/api/rename", { id: x.id, title: t.trim() });
+// the name, with a pencil to change it (e.g. to tell two episodes of one show apart)
+function titleEl(x) {
+  const pen = el("button", { class: "pen", title: "Change the name", onclick: async () => {
+    const t = prompt("New name (for example: Black Bird — S1 E2)", x.title || "");
+    if (t === null || !t.trim()) return;
+    try { await api("/api/rename", { id: x.id, title: t.trim() }); } catch (e) { toast("Problem: " + e.message); }
+    refresh();
+  } }, "✎");
+  return el("div", { class: "title" }, x.title || "(untitled)", " ", pen);
 }
 function btn(text, fn, cls) {
   return el("button", { class: "small " + (cls || ""), onclick: async (ev) => {
@@ -160,15 +168,14 @@ function render() {
     `(their cleaned sound uses ${data.watched_mb || 0} MB; delete it when you no longer need it)`;
   for (const x of watched) {
     wbox.append(el("div", { class: "card" },
-      el("div", { class: "title" }, x.title || "(untitled)"),
+      titleEl(x),
       el("div", { class: "meta" }, [fmt(x.duration), x.size_mb ? `${x.size_mb} MB` : "",
                                     "watched " + new Date(x.watched_at * 1000).toLocaleDateString()].filter(Boolean).join(" · ")),
       el("div", { class: "row" },
         btn("Delete cleaned sound", async () => { if (confirm(`Delete the cleaned sound of "${x.title}" (${x.size_mb} MB)?`)) await api("/api/remove", { id: x.id }); }, "stop"),
         btn("▶ Watch again", async () => { await api("/api/play", { id: x.id }); toast("Opening the player ..."); }),
         btn("Send to tablet", async () => { await api("/api/play", { id: x.id, tablet: true }); toast("Open the MuteHaram app on the tablet"); }),
-        btn("Not watched yet", () => api("/api/watched", { id: x.id, watched: false })),
-        btn("Rename", () => rename(x))))));
+        btn("Not watched yet", () => api("/api/watched", { id: x.id, watched: false })))));
   }
   const ready = items.filter((x) => x.status === "ready" && !x.watched_at);
   const rbox = document.getElementById("ready");
@@ -176,14 +183,13 @@ function render() {
   if (!ready.length) rbox.append(el("div", { class: "empty" }, "Nothing ready yet."));
   for (const x of ready) {
     rbox.append(el("div", { class: "card" },
-      el("div", { class: "title" }, x.title || "(untitled)"),
+      titleEl(x),
       el("div", { class: "meta" }, [fmt(x.duration), x.size_mb ? `${x.size_mb} MB` : "",
                                     x.unclean_s ? `${fmt(x.unclean_s)} could not be cleaned (silent)` : ""].filter(Boolean).join(" · ")),
       el("div", { class: "row" },
         btn("▶ Watch on this PC", async () => { await api("/api/play", { id: x.id }); toast("Opening the player ..."); }, "primary"),
         btn("Send to tablet", async () => { await api("/api/play", { id: x.id, tablet: true }); toast("Open the MuteHaram app on the tablet"); }),
         btn("Mark watched", () => api("/api/watched", { id: x.id, watched: true })),
-        btn("Rename", () => rename(x)),
         btn("Remove", async () => { if (confirm(`Remove "${x.title}" and its cleaned sound?`)) await api("/api/remove", { id: x.id }); }))));
   }
 
@@ -202,7 +208,7 @@ function render() {
     else if (x.status === "held") label = `Paused for this film at ${Math.round(x.progress * 100)} % (press Resume; the rest of the queue carries on)`;
     else if (x.status === "paused" || (x.status === "queued" && x.progress > 0)) label = `Paused at ${Math.round(x.progress * 100)} % (carries on from there when cleaning is started)`;
     else if (x.status === "error") label = "Problem: " + (x.error || "unknown");
-    const cell = el("td", {}, el("div", { class: "title" }, x.title || "(untitled)"),
+    const cell = el("td", {}, titleEl(x),
                     el("div", { class: "st " + x.status }, label));
     if (x.progress > 0 || x.status === "processing") {
       const bar = el("div", { class: "bar" }, el("i", {}));
@@ -217,7 +223,6 @@ function render() {
     if (x.status === "error") acts.append(btn("Try again", () => api("/api/retry", { id: x.id })), " ");
     else if (x.status === "held") acts.append(btn("Resume", () => api("/api/resume", { id: x.id }), "primary"), " ");
     else acts.append(btn("Pause", () => api("/api/hold", { id: x.id })), " ");
-    acts.append(btn("Rename", () => rename(x)), " ");
     acts.append(btn("Remove", async () => { if (confirm(`Remove "${x.title}" from the queue?`)) await api("/api/remove", { id: x.id }); }));
     tb.append(el("tr", {}, el("td", { class: "n" }, String(i + 1)), cell, pct, acts));
   });
