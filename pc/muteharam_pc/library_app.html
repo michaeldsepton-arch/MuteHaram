@@ -29,6 +29,7 @@
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
   .title { font-weight: 600; word-break: break-word; }
   .pen { background: none; border: none; padding: 0 4px; color: var(--dim); font-size: 15px; cursor: pointer; }
+  .added { color: var(--dim); font-weight: 400; font-size: 13px; }
   .pen:hover { color: var(--accent); }
   .meta { color: var(--dim); font-size: 13px; margin: 3px 0 10px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -123,7 +124,11 @@ function titleEl(x) {
     try { await api("/api/rename", { id: x.id, title: t.trim() }); } catch (e) { toast("Problem: " + e.message); }
     refresh();
   } }, "✎");
-  return el("div", { class: "title" }, x.title || "(untitled)", " ", pen);
+  // when it was added, to the second: tells apart two items with the same name
+  const added = x.added ? new Date(x.added * 1000).toLocaleString([], { day: "numeric", month: "short",
+    hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+  return el("div", { class: "title" }, x.title || "(untitled)",
+            added ? el("span", { class: "added" }, " · added " + added) : "", " ", pen);
 }
 function btn(text, fn, cls) {
   return el("button", { class: "small " + (cls || ""), onclick: async (ev) => {
