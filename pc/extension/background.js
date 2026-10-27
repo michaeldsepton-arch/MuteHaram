@@ -144,6 +144,46 @@ async function pagePosition(tabId) {
   }
 }
 
+// The tab title names only the show ("Watch Black Bird"), so two episodes would look the same.
+// Streaming sites keep the episode being watched in their saved data ("continue watching" lists
+// with season and episode): use the newest entry for this show, else an S1E2-style page address.
+async function pageTitle(tab) {
+  try {
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const name = document.title.replace(/^\s*watch(ing)?\s+/i, "").replace(/\s+\|\s+.*$/, "").trim()
+          || document.title;
+        const same = (t) => typeof t === "string" && t.trim().toLowerCase() === name.toLowerCase();
+        let best = null;
+        const walk = (o, depth) => {
+          if (!o || typeof o !== "object" || depth > 5) return;
+          if (Array.isArray(o)) { o.forEach((x) => walk(x, depth + 1)); return; }
+          const s = Number(o.season ?? o.season_number), e = Number(o.episode ?? o.episode_number);
+          if (s > 0 && e > 0 && same(o.title || o.name)) {
+            const t = Date.parse(o.watchedAt || o.updatedAt || o.addedAt || "") || 0;
+            if (!best || t > best.t) best = { s, e, t };
+          }
+          Object.values(o).forEach((x) => walk(x, depth + 1));
+        };
+        try {
+          for (let i = 0; i < localStorage.length; i++) {
+            try { walk(JSON.parse(localStorage.getItem(localStorage.key(i))), 0); } catch (e) { /* not JSON */ }
+          }
+        } catch (e) { /* storage blocked */ }
+        if (!best) {
+          const m = location.href.match(/season[\/=-](\d+).*episode[\/=-](\d+)/i) || location.href.match(/[\/_-]s(\d+)[\/_-]?e(\d+)\b/i);
+          if (m) best = { s: Number(m[1]), e: Number(m[2]) };
+        }
+        return best ? `${name} — S${best.s} E${best.e}` : name;
+      },
+    });
+    return (res && res.result) || tab.title;
+  } catch (e) {
+    return tab.title;
+  }
+}
+
 function pausePage(tabId) {
   chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
@@ -261,7 +301,7 @@ async function openInPlayer(tab, pip, tablet, queue) {
       const audioNow = (found[tab.id] || []).filter((x) => /(\/audio[\/_-]|[_-]audio|audio[_-])/i.test(x.url))
         .sort((x, y) => y.t - x.t)[0];
       payload = { url: c.url, direct: true, alts, audio: audioNow ? audioNow.url : undefined, headers: c.headers, referer: c.headers.Referer || tab.url, start, page: tab.url,
-                  title: tab.title, pip, subs: subsFound[tab.id] || [] };
+                  title: await pageTitle(tab), pip, subs: subsFound[tab.id] || [] };
     } else {
       // No stream address seen. Save a report of what the page loaded (so it can be examined)
       // and still try the page address itself: yt-dlp can find the video on some sites.

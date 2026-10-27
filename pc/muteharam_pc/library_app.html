@@ -113,6 +113,10 @@ function el(tag, attrs, ...kids) {
   for (const k of kids) e.append(k);
   return e;
 }
+function rename(x) {
+  const t = prompt("New name (for example: Black Bird — S1 E2)", x.title || "");
+  if (t !== null && t.trim()) api("/api/rename", { id: x.id, title: t.trim() });
+}
 function btn(text, fn, cls) {
   return el("button", { class: "small " + (cls || ""), onclick: async (ev) => {
     ev.currentTarget.disabled = true;
@@ -163,7 +167,8 @@ function render() {
         btn("Delete cleaned sound", async () => { if (confirm(`Delete the cleaned sound of "${x.title}" (${x.size_mb} MB)?`)) await api("/api/remove", { id: x.id }); }, "stop"),
         btn("▶ Watch again", async () => { await api("/api/play", { id: x.id }); toast("Opening the player ..."); }),
         btn("Send to tablet", async () => { await api("/api/play", { id: x.id, tablet: true }); toast("Open the MuteHaram app on the tablet"); }),
-        btn("Not watched yet", () => api("/api/watched", { id: x.id, watched: false })))));
+        btn("Not watched yet", () => api("/api/watched", { id: x.id, watched: false })),
+        btn("Rename", () => rename(x))))));
   }
   const ready = items.filter((x) => x.status === "ready" && !x.watched_at);
   const rbox = document.getElementById("ready");
@@ -178,6 +183,7 @@ function render() {
         btn("▶ Watch on this PC", async () => { await api("/api/play", { id: x.id }); toast("Opening the player ..."); }, "primary"),
         btn("Send to tablet", async () => { await api("/api/play", { id: x.id, tablet: true }); toast("Open the MuteHaram app on the tablet"); }),
         btn("Mark watched", () => api("/api/watched", { id: x.id, watched: true })),
+        btn("Rename", () => rename(x)),
         btn("Remove", async () => { if (confirm(`Remove "${x.title}" and its cleaned sound?`)) await api("/api/remove", { id: x.id }); }))));
   }
 
@@ -211,6 +217,7 @@ function render() {
     if (x.status === "error") acts.append(btn("Try again", () => api("/api/retry", { id: x.id })), " ");
     else if (x.status === "held") acts.append(btn("Resume", () => api("/api/resume", { id: x.id }), "primary"), " ");
     else acts.append(btn("Pause", () => api("/api/hold", { id: x.id })), " ");
+    acts.append(btn("Rename", () => rename(x)), " ");
     acts.append(btn("Remove", async () => { if (confirm(`Remove "${x.title}" from the queue?`)) await api("/api/remove", { id: x.id }); }));
     tb.append(el("tr", {}, el("td", { class: "n" }, String(i + 1)), cell, pct, acts));
   });
