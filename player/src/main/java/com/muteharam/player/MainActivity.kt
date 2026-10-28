@@ -29,6 +29,7 @@ import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MergingMediaSource
@@ -68,6 +69,10 @@ class MainActivity : AppCompatActivity() {
 
     @Volatile
     private var running = false
+
+    // whether the film is playing, for the background check (the player itself may only be asked on the main thread)
+    @Volatile
+    private var playingNow = false
 
     // where the film was, so that after a playback problem it carries on from there (not from the beginning)
     @Volatile
@@ -311,7 +316,7 @@ class MainActivity : AppCompatActivity() {
                     val j = org.json.JSONObject(text)
                     if (j.optBoolean("preparing")) {
                         // "Send to the tablet" was pressed: the PC opens the film and cleans its first seconds
-                        if (player == null || player?.isPlaying != true) {
+                        if (player == null || !playingNow) {
                             setStatus(
                                 if (j.optBoolean("failed")) j.optString("status") + "\n(details in the window on the PC)"
                                 else "The PC is preparing the film ... " + j.optLong("elapsed_s") + " s\n" +
@@ -363,7 +368,7 @@ class MainActivity : AppCompatActivity() {
                         stoppedId = -1L
                         currentId = -1L
                         setStatus("The PC stopped sending the film.\nSend it again from the PC when you want to carry on (it continues where it was).")
-                    } else if (stoppedId == -1L && (player == null || player?.isPlaying != true)) {
+                    } else if (stoppedId == -1L && (player == null || !playingNow)) {
                         val why = when (e) {
                             is java.net.ConnectException, is java.net.SocketTimeoutException ->
                                 "Nothing has been sent from the PC yet (or the PC is not on this Wi-Fi)."
@@ -407,6 +412,7 @@ class MainActivity : AppCompatActivity() {
         showMode(s.mode)
         setStatus(("Starting " + s.title).trim())
         player?.release()
+        playingNow = false
 
         val http = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
@@ -438,7 +444,15 @@ class MainActivity : AppCompatActivity() {
         )
             .createMediaSource(MediaItem.fromUri(audioUrl))
 
+        // keep ~5 minutes of film ready: website servers and home internet slow down now and then, and a
+        // small reserve turns every dip into a freeze. After a stall, wait for 10 s of film so it does not stutter.
+        val load = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(120_000, 300_000, 2_500, 10_000)
+            .setTargetBufferBytes(220 * 1024 * 1024)
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
         val p = ExoPlayer.Builder(this)
+            .setLoadControl(load)
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(30_000)
             .build()
@@ -477,6 +491,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 android.util.Log.e("MuteHaramPlayer", "playback error", error)
                 setStatus("Playback problem: " + error.errorCodeName + "\n" + (error.message ?: "") + why + "\n(tap here to try again)", tappable = true)
+            }
+
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (player === p) playingNow = isPlaying
             }
 
             override fun onTracksChanged(tracks: Tracks) {
