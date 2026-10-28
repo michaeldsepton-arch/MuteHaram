@@ -117,4 +117,31 @@ stages.clear()
 clock[0] = 0.0
 g.gate(5.0, lambda: False, stages.append)
 assert g.state == "full" and stages[-1] == "cleaning" and clock[0] < 200, (stages, clock[0])
+# an expired website link: the same film added again (same player or same length) gets the fresh link
+from muteharam_pc.library import write_json, mpv_header_args
+lib2 = Library(tempfile.mkdtemp(prefix="mh_lib2_"))
+e1 = lib2.add({"url": "https://x/old.m3u8?token=1", "title": "Show", "player": "https://p/embed/1/1-2", "headers": {"Referer": "https://p/"}})
+write_json(os.path.join(lib2.item_dir(e1), "progress.json"), {"done": True, "duration": 3526.48, "picture": "https://x/old.m3u8?token=1"})
+open(os.path.join(lib2.item_dir(e1), "audio.opus"), "wb").write(b"x")
+assert lib2.same_film({"player": "https://p/embed/1/1-2"}, 3526.4) == e1
+assert lib2.same_film({"player": "https://p/embed/1/1-3"}, 3000.0) is None, "another episode is never matched"
+assert lib2.same_film({"player": "https://p/embed/1/1-2"}, 3000.0) is None, "same player but another length: not the same film"
+assert lib2.same_film({}, 3526.9) == e1, "an old item without player: matched by length"
+lib2.relink(e1, {"url": "https://x/new.m3u8?token=2", "headers": {"Referer": "https://q/", "User-Agent": "UA"}, "title": "ignored"})
+m, pr = lib2.meta(e1), lib2.progress(e1)
+assert m["url"].endswith("token=2") and m["req"]["player"] == "https://p/embed/1/1-2" and m["req"]["title"] == "Show"
+assert pr["picture"].endswith("token=2") and pr["mpv_args"] == ["--user-agent=UA", "--referrer=https://q/"]
+assert lib2.picture(e1) == ("https://x/new.m3u8?token=2", {"Referer": "https://q/", "User-Agent": "UA"})
+# a queued film whose link expired is set aside (not failed) and the queue keeps going
+e2 = lib2.add({"url": "https://x/dead.m3u8", "title": "Dead link"})
+r2 = Runner(lib2, lambda i, m: [sys.executable, "-c", "pass"], log=lambda *m: None,
+            link_ok=lambda i: not lib2.picture(i)[0].endswith("dead.m3u8"))
+r2.start()
+t0 = time.time()
+while time.time() - t0 < 10 and next(x for x in lib2.items() if x["id"] == e2)["status"] != "needs_link":
+    time.sleep(0.3)
+assert next(x for x in lib2.items() if x["id"] == e2)["status"] == "needs_link" and r2.state()["running"]
+lib2.relink(e2, {"url": "https://x/alive.m3u8"})
+assert lib2.meta(e2)["status"] == "queued"
+r2.stop()
 print("LIBRARY TEST OK")

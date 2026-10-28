@@ -154,17 +154,8 @@ def mpv_list_value(v):
 def resolve(url, headers, cfg, log, sub_langs="en.*,ar.*"):
     """-> dict(media_url, headers, duration, mpv_url, mpv_args)"""
     if is_direct(url):
-        mpv_args = []
-        hdrs = dict(headers)
-        ua = next((hdrs.pop(k) for k in list(hdrs) if k.lower() == "user-agent"), None)
-        ref = next((hdrs.pop(k) for k in list(hdrs) if k.lower() == "referer"), None)
-        if ua:
-            mpv_args.append(f"--user-agent={ua}")
-        if ref:
-            mpv_args.append(f"--referrer={ref}")
-        if hdrs:
-            mpv_args.append("--http-header-fields=" + ",".join(f"{k}: {v}".replace(",", "%2C") for k, v in hdrs.items()))
-        return dict(media_url=url, headers=headers, duration=None, mpv_url=url, mpv_args=mpv_args)
+        from .library import mpv_header_args
+        return dict(media_url=url, headers=headers, duration=None, mpv_url=url, mpv_args=mpv_header_args(headers))
     if not cfg["yt_dlp"]:
         raise SystemExit("yt-dlp is needed for page links. Run  python setup_pc.py")
     log("resolving with yt-dlp ...")

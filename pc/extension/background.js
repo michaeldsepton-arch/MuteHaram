@@ -184,6 +184,88 @@ async function pageTitle(tab) {
   }
 }
 
+// The episode's own player (the frame showing the video, e.g. https://site/embed/155537/1-2: show, season,
+// episode). Its address does not expire, unlike the video links it hands out, so the library keeps it.
+async function playerAddress(tab) {
+  try {
+    const [res] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const f = [...document.querySelectorAll("iframe")].filter((x) => /^https?:/.test(x.src))
+          .map((x) => ({ src: x.src, area: x.offsetWidth * x.offsetHeight })).sort((a, b) => b.area - a.area)[0];
+        if (f && f.area > 40000) return f.src;
+        return document.querySelector("video") ? location.href : "";
+      },
+    });
+    return (res && res.result) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+// Open the episode's player in a hidden, muted tab and take the video link it loads (a fresh one).
+async function freshStream(player) {
+  const tab = await chrome.tabs.create({ url: player, active: false });
+  const popups = new Set();                        // tabs the player opens (adverts): closed afterwards
+  const onCreated = (t) => { if (t.openerTabId === tab.id) popups.add(t.id); };
+  chrome.tabs.onCreated.addListener(onCreated);
+  chrome.tabs.update(tab.id, { muted: true }).catch(() => {});
+  try {
+    const t0 = Date.now();
+    let nudged = false, seenAt = 0;
+    while (Date.now() - t0 < 45000) {
+      await new Promise((r) => setTimeout(r, 1000));
+      await chrome.tabs.get(tab.id);                 // (also keeps the extension awake meanwhile)
+      if ((found[tab.id] || []).length) {
+        seenAt ||= Date.now();
+        if (Date.now() - seenAt > 2500) return streamPayload(tab.id, player);   // its other playlists too
+      } else if (!nudged && Date.now() - t0 > 8000) {
+        nudged = true;                               // some players wait for "play"
+        chrome.scripting.executeScript({
+          target: { tabId: tab.id, allFrames: true },
+          func: () => {
+            document.querySelectorAll("video").forEach((v) => { v.muted = true; v.play().catch(() => {}); });
+            const b = document.querySelector(".vjs-big-play-button, .jw-icon-display, .plyr__control--overlaid, [aria-label='Play'], .play-button, #play");
+            if (b) b.click();
+          },
+        }).catch(() => {});
+      }
+    }
+    return (found[tab.id] || []).length ? streamPayload(tab.id, player) : null;
+  } finally {
+    chrome.tabs.onCreated.removeListener(onCreated);
+    chrome.tabs.remove([tab.id, ...popups]).catch(() => {});
+  }
+}
+
+function streamPayload(tabId, page) {
+  const c = pickCandidate(tabId);
+  if (!c) return null;
+  const alts = candidateList(tabId).map((x) => x.url).filter((u) => u !== c.url).slice(0, 6);
+  // The audio the viewer picked (e.g. English): the page requested that audio-only playlist last.
+  // The player shows the picture from the main playlist but the music is removed from THIS audio.
+  const audioNow = (found[tabId] || []).filter((x) => /(\/audio[\/_-]|[_-]audio|audio[_-])/i.test(x.url))
+    .sort((x, y) => y.t - x.t)[0];
+  return { url: c.url, direct: true, alts, audio: audioNow ? audioNow.url : undefined, headers: c.headers,
+           referer: c.headers.Referer || page, subs: subsFound[tabId] || [] };
+}
+
+// The library window asks (through library_bridge.js) for a fresh link for one of its films.
+chrome.runtime.onMessage.addListener((m, sender, reply) => {
+  if (!m || m.t !== "relink" || !(sender.url || "").startsWith(HELPER + "/")) return;
+  (async () => {
+    await stateReady;
+    if (!/^https?:\/\//.test(m.player || "")) return { ok: false, error: "no player address saved for this film" };
+    const p = await freshStream(m.player);
+    if (!p) return { ok: false, error: "The website's player gave no video link (the site may be down, or this server stopped working). " +
+                                       "Open the episode on the website, start it playing, then use Add to the MuteHaram library." };
+    const r = await post("/api/relink", { id: m.id, ...p });
+    const j = await r.json().catch(() => ({}));
+    return r.ok ? { ok: true } : { ok: false, error: j.error || "helper said " + r.status };
+  })().then(reply, (e) => reply({ ok: false, error: e.message }));
+  return true;
+});
+
 function pausePage(tabId) {
   chrome.scripting.executeScript({
     target: { tabId, allFrames: true },
@@ -293,15 +375,9 @@ async function openInPlayer(tab, pip, tablet, queue) {
   if (YT_RE.test(tab.url || "")) {
     payload = { url: tab.url, start, pip, subs: subsFound[tab.id] || [] };
   } else {
-    const c = pickCandidate(tab.id);
-    if (c) {
-      const alts = candidateList(tab.id).map((x) => x.url).filter((u) => u !== c.url).slice(0, 6);
-      // The audio the viewer picked (e.g. English): the page requested that audio-only playlist last.
-      // The player shows the picture from the main playlist but the music is removed from THIS audio.
-      const audioNow = (found[tab.id] || []).filter((x) => /(\/audio[\/_-]|[_-]audio|audio[_-])/i.test(x.url))
-        .sort((x, y) => y.t - x.t)[0];
-      payload = { url: c.url, direct: true, alts, audio: audioNow ? audioNow.url : undefined, headers: c.headers, referer: c.headers.Referer || tab.url, start, page: tab.url,
-                  title: await pageTitle(tab), pip, subs: subsFound[tab.id] || [] };
+    const s = streamPayload(tab.id, tab.url);
+    if (s) {
+      payload = { ...s, start, page: tab.url, title: await pageTitle(tab), player: await playerAddress(tab), pip };
     } else {
       // No stream address seen. Save a report of what the page loaded (so it can be examined)
       // and still try the page address itself: yt-dlp can find the video on some sites.
@@ -321,7 +397,9 @@ async function openInPlayer(tab, pip, tablet, queue) {
     try {
       const r = await post("/queue/add", payload);
       if (!r.ok) throw new Error("helper said " + r.status);
-      badge(tab.id, "+Q", "#1a7f37", "Added to the MuteHaram library. Open the library window and press Start cleaning.");
+      const j = await r.json().catch(() => ({}));
+      if (j.relinked) badge(tab.id, "OK", "#1a7f37", "Already in the MuteHaram library: it now has the fresh link and plays again.");
+      else badge(tab.id, "+Q", "#1a7f37", "Added to the MuteHaram library. Open the library window and press Start cleaning.");
     } catch (e) {
       badge(tab.id, "ERR", "#c62828", "Can't reach the MuteHaram helper. Start it with start_helper.bat. (" + e.message + ")");
     }

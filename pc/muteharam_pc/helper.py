@@ -26,9 +26,9 @@ RUNNER = None
 def library():
     global LIB, RUNNER
     if LIB is None:
-        from .library import Library, Runner
+        from .library import Library, Runner, link_alive
         LIB = Library()
-        RUNNER = Runner(LIB, preclean_command)
+        RUNNER = Runner(LIB, preclean_command, link_ok=lambda i: link_alive(*LIB.picture(i)) if not LIB.progress(i).get("done") else True)
     return LIB, RUNNER
 
 
@@ -197,8 +197,27 @@ class Handler(BaseHTTPRequestHandler):
         lib, run = library()
         p = self.path
         if p == "/queue/add":
+            # the same episode added again (its link had expired): give the one in the library the fresh link
+            from .library import probe_duration
+            same = lib.same_film(req, probe_duration(config.load()["ffprobe"], req.get("url", ""), req.get("headers")))
+            if same:
+                lib.relink(same, req)
+                return self._json(200, {"ok": True, "id": same, "relinked": True})
             item_id = lib.add(req)
             return self._json(200, {"ok": True, "id": item_id})
+        if p == "/api/relink":
+            # a fresh link the extension got from the episode's player: only if it is the same film (same length)
+            from .library import probe_duration
+            item_id = str(req.pop("id"))
+            had = (lib.progress(item_id) or {}).get("duration")
+            got = probe_duration(config.load()["ffprobe"], req.get("url", ""), req.get("headers"))
+            if had and (got is None or abs(float(had) - got) > 2.0):
+                return self._json(409, {"error": "the website gave a different video ("
+                                        + (f"{got / 60:.1f} min instead of {float(had) / 60:.1f} min" if got else "could not measure it")
+                                        + "), so the cleaned sound would not fit. Open the episode on the website, "
+                                          "choose another server, start it, then use Add to the MuteHaram library."})
+            lib.relink(item_id, req)
+            return self._json(200, {"ok": True})
         if p == "/api/start":
             run.start()
         elif p == "/api/stop":
@@ -223,6 +242,11 @@ class Handler(BaseHTTPRequestHandler):
         elif p == "/api/play":
             global _tablet_proc
             tablet = bool(req.get("tablet"))
+            from .library import link_alive
+            if not link_alive(*lib.picture(str(req["id"]))):
+                # the website's link has expired: the library window asks the extension for a fresh one
+                return self._json(409, {"error": "link_expired",
+                                        "player": ((lib.meta(str(req["id"])) or {}).get("req") or {}).get("player", "")})
             cmd = library_play_command(str(req["id"]), tablet, bool(req.get("pip")))
             lib.update(str(req["id"]), watched_at=time.time())     # shown under "Watched", ready to delete
             if tablet and _tablet_proc is not None and _tablet_proc.poll() is None:

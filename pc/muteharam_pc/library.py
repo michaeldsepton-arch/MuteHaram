@@ -40,6 +40,54 @@ def write_json(path, obj):
     os.replace(tmp, path)          # never a half-written file, even if the program is stopped right then
 
 
+# Streaming sites hand out video links that stop working after a few hours. The library keeps the
+# episode's player address (it does not expire); the extension opens it again for a fresh link.
+def mpv_header_args(headers):
+    """The headers a stream needs, as mpv options."""
+    hdrs = dict(headers or {})
+    ua = next((hdrs.pop(k) for k in list(hdrs) if k.lower() == "user-agent"), None)
+    ref = next((hdrs.pop(k) for k in list(hdrs) if k.lower() == "referer"), None)
+    args = []
+    if ua:
+        args.append(f"--user-agent={ua}")
+    if ref:
+        args.append(f"--referrer={ref}")
+    if hdrs:
+        args.append("--http-header-fields=" + ",".join(f"{k}: {v}".replace(",", "%2C") for k, v in hdrs.items()))
+    return args
+
+
+def link_alive(url, headers, timeout=12):
+    """False only when the site clearly refuses the link (expired); unsure (no network ...) counts as alive."""
+    import urllib.error
+    import urllib.request
+    if not str(url).startswith(("http://", "https://")):
+        return True
+    try:
+        req = urllib.request.Request(url, headers={k: v for k, v in (headers or {}).items() if k.lower() != "cookie"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            r.read(1)
+        return True
+    except urllib.error.HTTPError as ex:
+        return ex.code not in (401, 403, 404, 410)
+    except Exception:
+        return True
+
+
+def probe_duration(ffprobe, url, headers, timeout=60):
+    """Length of a video in seconds (None when it can't be measured)."""
+    cmd = [ffprobe, "-v", "error", "-rw_timeout", "20000000"]
+    if headers:
+        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
+    cmd += ["-show_entries", "format=duration", "-of", "csv=p=0", url]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0).stdout
+        return float(out.strip().splitlines()[0])
+    except Exception:
+        return None
+
+
 class Library:
     def __init__(self, root=LIB_DIR):
         self.root = root
@@ -80,6 +128,7 @@ class Library:
                                 error=m.get("error") or p.get("error") or "", stage=p.get("stage", ""),
                                 unclean_s=p.get("unclean_s", 0), mode=p.get("mode", ""),
                                 watched_at=m.get("watched_at"),
+                                player=(m.get("req") or {}).get("player", ""),
                                 size_mb=round(os.path.getsize(os.path.join(self.item_dir(i), "audio.opus")) / 1e6, 1)
                                 if ready else None))
             res.sort(key=lambda x: (x["order"], x["added"]))
@@ -97,6 +146,45 @@ class Library:
                         order=(max(orders) + 1) if orders else 1, status="queued")
             write_json(os.path.join(self.item_dir(item_id), "meta.json"), meta)
             return item_id
+
+    def picture(self, item_id):
+        """(address, headers) the film's picture is played from."""
+        p, m = self.progress(item_id), self.meta(item_id) or {}
+        req = m.get("req") or {}
+        return p.get("picture") or req.get("url", ""), p.get("headers") or req.get("headers") or {}
+
+    def relink(self, item_id, new):
+        """Use a fresh link for the same film (the old one expired). Its length was checked by the caller."""
+        with self.lock:
+            m = self.meta(item_id)
+            if m is None:
+                return None
+            keep = {k: (m.get("req") or {}).get(k) for k in ("title", "page", "player")}
+            req = dict(new, **{k: v for k, v in keep.items() if v})
+            fields = dict(req=req, url=req.get("url", ""), relinked_at=time.time())
+            if m.get("status") == "needs_link":
+                fields["status"] = "queued"
+            m.update(fields)
+            write_json(os.path.join(self.item_dir(item_id), "meta.json"), m)
+            p = self.progress(item_id)
+            if p:                              # play (or carry on cleaning) from the new link
+                p.update(url=req["url"], picture=req["url"], headers=req.get("headers") or {},
+                         mpv_args=mpv_header_args(req.get("headers")), subs=req.get("subs") or p.get("subs") or [])
+                write_json(os.path.join(self.item_dir(item_id), "progress.json"), p)
+            return m
+
+    def same_film(self, req, duration):
+        """An item already in the library that this link is (the same episode player, or the same length)."""
+        player = req.get("player")
+        same_len = lambda x: bool(duration and x["duration"]) and abs(float(x["duration"]) - duration) < 1.0
+        for x in self.items():
+            m = self.meta(x["id"]) or {}
+            if player and (m.get("req") or {}).get("player") == player and (same_len(x) or not (duration and x["duration"])):
+                return x["id"]
+        for x in self.items():
+            if same_len(x):
+                return x["id"]
+        return None
 
     def space(self):
         """Bytes of cleaned sound kept on this PC: (all, of films already watched)."""
@@ -148,9 +236,10 @@ class Runner:
     """Cleans the queue one item at a time, ONLY while switched on (the Start button). Stop ends the current job
     at once (the graphics card is free again); it carries on from where it was the next time."""
 
-    def __init__(self, library, command_for, log=print):
+    def __init__(self, library, command_for, log=print, link_ok=None):
         self.lib = library
         self.command_for = command_for          # command_for(item_id, meta) -> the command line to clean it
+        self.link_ok = link_ok                  # link_ok(item_id) -> False when its website link has expired
         self.log = log
         self.running = False
         self.proc = None
@@ -214,8 +303,15 @@ class Runner:
                     continue
                 item = self._next()
                 if item is None:
+                    if any(x["status"] == "needs_link" for x in self.lib.items()):
+                        continue                  # carries on once a fresh link comes
                     self.running = False          # everything is cleaned
                     self.log("library: everything in the queue is cleaned")
+                    continue
+                if self.link_ok is not None and not self.link_ok(item["id"]):
+                    # skipped until the library window has the extension fetch a fresh link
+                    self.lib.update(item["id"], status="needs_link")
+                    self.log(f"library: the link of {item['title'][:60]!r} has expired")
                     continue
                 meta = self.lib.meta(item["id"])
                 cmd = self.command_for(item["id"], meta)

@@ -92,13 +92,53 @@ async function api(path, body) {
   const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json", "X-MuteHaram": "1" },
                                 body: JSON.stringify(body || {}) });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || ("error " + r.status));
+  if (!r.ok) throw Object.assign(new Error(j.error || ("error " + r.status)), { info: j });
   return j;
+}
+
+// Websites' video links stop working after a few hours. The MuteHaram extension opens the episode's
+// player again in a hidden tab, takes the fresh link, and the PC checks it is the same film (same length).
+function askExtension(id, player) {
+  return new Promise((resolve) => {
+    if (document.documentElement.dataset.mhExt !== "1") return resolve({ ok: false, error: "no_extension" });
+    const key = Math.random().toString(36).slice(2);
+    const done = (res) => { removeEventListener("message", on); clearTimeout(timer); resolve(res); };
+    const on = (e) => { if (e.source === window && e.data && e.data.mhLib === "relinked" && e.data.key === key) done(e.data.res || {}); };
+    const timer = setTimeout(() => done({ ok: false, error: "the extension did not answer in time" }), 120000);
+    addEventListener("message", on);
+    postMessage({ mhLib: "relink", key, id, player }, "*");
+  });
+}
+const relinking = new Set();
+const relinkTried = {};
+const REDO = `Open it on the website, start it playing, then choose "Add to the MuteHaram library": it finds the cleaned sound and gives it the fresh link.`;
+async function freshLink(x, player) {
+  if (!player) throw new Error(`The website's link for "${x.title}" has expired. ` + REDO);
+  relinking.add(x.id);
+  relinkTried[x.id] = Date.now();
+  toast("The website's link has expired: getting a fresh one (10 to 40 seconds) ...");
+  render();
+  try {
+    const r = await askExtension(x.id, player);
+    if (!r.ok) throw new Error(r.error === "no_extension"
+      ? "The website's link has expired and the MuteHaram extension can't fetch a new one from this window. Reload the extension in chrome://extensions, then reopen the library. Or: " + REDO
+      : r.error);
+  } finally { relinking.delete(x.id); }
+}
+async function play(x, tablet) {
+  try { await api("/api/play", { id: x.id, tablet }); }
+  catch (e) {
+    if (e.message !== "link_expired") throw e;
+    await freshLink(x, e.info.player);
+    await api("/api/play", { id: x.id, tablet });
+  }
+  toast(tablet ? "Open the MuteHaram app on the tablet" : "Opening the player ...");
 }
 function toast(t) {
   const el = document.getElementById("toast");
   el.textContent = t; el.classList.add("show");
-  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("show"), 3500);
+  // problems stay up long enough to read (about 1 s per 15 characters)
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("show"), Math.max(3500, t.length * 70));
 }
 function fmt(s) {
   if (s == null || !isFinite(s)) return "";
@@ -178,8 +218,8 @@ function render() {
                                     "watched " + new Date(x.watched_at * 1000).toLocaleDateString()].filter(Boolean).join(" · ")),
       el("div", { class: "row" },
         btn("Delete cleaned sound", async () => { if (confirm(`Delete the cleaned sound of "${x.title}" (${x.size_mb} MB)?`)) await api("/api/remove", { id: x.id }); }, "stop"),
-        btn("▶ Watch again", async () => { await api("/api/play", { id: x.id }); toast("Opening the player ..."); }),
-        btn("Send to tablet", async () => { await api("/api/play", { id: x.id, tablet: true }); toast("Open the MuteHaram app on the tablet"); }),
+        btn("▶ Watch again", () => play(x, false)),
+        btn("Send to tablet", () => play(x, true)),
         btn("Not watched yet", () => api("/api/watched", { id: x.id, watched: false })))));
   }
   const ready = items.filter((x) => x.status === "ready" && !x.watched_at);
@@ -192,8 +232,8 @@ function render() {
       el("div", { class: "meta" }, [fmt(x.duration), x.size_mb ? `${x.size_mb} MB` : "",
                                     x.unclean_s ? `${fmt(x.unclean_s)} could not be cleaned (silent)` : ""].filter(Boolean).join(" · ")),
       el("div", { class: "row" },
-        btn("▶ Watch on this PC", async () => { await api("/api/play", { id: x.id }); toast("Opening the player ..."); }, "primary"),
-        btn("Send to tablet", async () => { await api("/api/play", { id: x.id, tablet: true }); toast("Open the MuteHaram app on the tablet"); }),
+        btn("▶ Watch on this PC", () => play(x, false), "primary"),
+        btn("Send to tablet", () => play(x, true)),
         btn("Mark watched", () => api("/api/watched", { id: x.id, watched: true })),
         btn("Remove", async () => { if (confirm(`Remove "${x.title}" and its cleaned sound?`)) await api("/api/remove", { id: x.id }); }))));
   }
@@ -213,6 +253,8 @@ function render() {
     else if (x.status === "held") label = `Paused for this film at ${Math.round(x.progress * 100)} % (press Resume; the rest of the queue carries on)`;
     else if (x.status === "paused" || (x.status === "queued" && x.progress > 0)) label = `Paused at ${Math.round(x.progress * 100)} % (carries on from there when cleaning is started)`;
     else if (x.status === "error") label = "Problem: " + (x.error || "unknown");
+    else if (x.status === "needs_link") label = relinking.has(x.id) ? "The website's link expired: getting a fresh one ..."
+      : x.player ? "The website's link expired: a fresh one is fetched while this window is open" : "The website's link expired. " + REDO;
     const cell = el("td", {}, titleEl(x),
                     el("div", { class: "st " + x.status }, label));
     if (x.progress > 0 || x.status === "processing") {
@@ -240,6 +282,10 @@ async function refresh() {
     data = await r.json();
     document.getElementById("offline").style.display = "none";
     render();
+    // queued films whose link expired before they were cleaned: fetch fresh links one at a time
+    const stale = (data.items || []).find((x) => x.status === "needs_link" && x.player && !relinking.size
+                                          && Date.now() - (relinkTried[x.id] || 0) > 600000);
+    if (stale) freshLink(stale, stale.player).catch((e) => toast("Problem: " + e.message)).finally(refresh);
   } catch (e) {
     document.getElementById("offline").style.display = "block";
   }
