@@ -127,6 +127,12 @@ assert lib2.same_film({"player": "https://p/embed/1/1-2"}, 3526.4) == e1
 assert lib2.same_film({"player": "https://p/embed/1/1-3"}, 3000.0) is None, "another episode is never matched"
 assert lib2.same_film({"player": "https://p/embed/1/1-2"}, 3000.0) is None, "same player but another length: not the same film"
 assert lib2.same_film({}, 3526.9) == e1, "an old item without player: matched by length"
+# an episode never cleaned (length unknown) and added before the player was saved: matched by show + episode number
+e6 = lib2.add({"url": "https://x/e6.m3u8", "title": "Watch Black Bird - Episode 6"})
+assert lib2.same_film({"title": "Black Bird — S1 E6"}, 3300.0) == e6
+assert lib2.same_film({"title": "Black Bird — S1 E7"}, 3300.0) is None
+assert lib2.same_film({"title": "Watch Black Bird"}, 3300.0) is None, "no episode number: never guessed"
+lib2.remove(e6)
 lib2.relink(e1, {"url": "https://x/new.m3u8?token=2", "headers": {"Referer": "https://q/", "User-Agent": "UA"}, "title": "ignored"})
 m, pr = lib2.meta(e1), lib2.progress(e1)
 assert m["url"].endswith("token=2") and m["req"]["player"] == "https://p/embed/1/1-2" and m["req"]["title"] == "Show"

@@ -54,4 +54,16 @@ assert level(x, 5.5, 7.5) < 0.01 and level(x, 1, 4) > 0.03 and level(x, 9, 12) >
 y = decode(src, 9.0)
 print(f"from 9 s: decoded {len(y) / SAMPLE_RATE:.2f} s")
 assert abs(len(y) / SAMPLE_RATE - 4.0) < 0.3
+
+# with the stream's own clock (what the player and the library use: duration() reads where the film starts)
+src.duration()
+assert src.start_time is not None
+z = decode(src, 0.0)
+assert abs(len(z) / SAMPLE_RATE - 13.0) < 0.3 and level(z, 5.5, 7.5) < 0.01 and level(z, 9, 12) > 0.03
+# starting INSIDE the missing part (the website refused those pieces; the cleaning reconnected there): the rest of
+# the missing part must be silence, not the sound from after it moved forward (Black Bird episode 5 after 29 min)
+w = decode(src, 6.0)
+print(f"from 6 s (inside the gap): decoded {len(w) / SAMPLE_RATE:.2f} s; 0-1.8 s {level(w, 0, 1.8):.4f}, 2.5-6.5 s {level(w, 2.5, 6.5):.3f}")
+assert abs(len(w) / SAMPLE_RATE - 7.0) < 0.3, "the sound after the gap must stay at its own time"
+assert level(w, 0, 1.8) < 0.01 and level(w, 2.5, 6.5) > 0.03
 print("SOURCE GAP TEST OK")

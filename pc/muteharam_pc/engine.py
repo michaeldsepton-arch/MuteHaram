@@ -15,6 +15,7 @@ How it fits together
   * A hiccup while reading the source is retried; a part that still can't be cleaned is silent (never the music).
 """
 import os
+import json
 import subprocess
 import tempfile
 import threading
@@ -37,6 +38,7 @@ class MediaSource:
         self.ffmpeg = ffmpeg
         self.ffprobe = ffprobe
         self._picky_on = False   # allow "disguised" HLS segments (.jpg etc.), see _http_args
+        self.start_time = None   # the stream's own clock at the film's start (from duration()), see _timing
 
     _picky_supported = {}
 
@@ -80,13 +82,18 @@ class MediaSource:
 
     def duration(self):
         for attempt in range(2):
-            cmd = [self.ffprobe, "-v", "error", *self._http_args(), "-show_entries", "format=duration",
-                   "-of", "default=nw=1:nk=1", self.url]
+            cmd = [self.ffprobe, "-v", "error", *self._http_args(), "-show_entries", "format=duration,start_time",
+                   "-of", "json", self.url]
             res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
             out = res.stdout.strip()
             try:
-                d = float(out)
+                fmt = json.loads(out or "{}").get("format") or {}
+                d = float(fmt.get("duration", "nan"))
                 if d > 0:
+                    try:
+                        self.start_time = float(fmt["start_time"])
+                    except (KeyError, ValueError):
+                        self.start_time = None
                     return d
             except ValueError:
                 pass
@@ -96,12 +103,27 @@ class MediaSource:
                 "the stream reports no length (a live stream?)" if out in ("", "N/A") else f"unexpected output {out!r}")
             raise RuntimeError("ffprobe could not read the stream: " + why)
 
+    def _timing(self, start_seconds):
+        """-> (options before the input, sound filter) to start at start_seconds of the film.
+
+        aresample async: the sound follows the stream's own clock. Without it a missing or broken piece of the
+        stream (it happens on long films) is simply left out, and from then on the sound runs AHEAD of the
+        picture by that much. The stream's clock is kept (-copyts) and the filter told where the start really
+        is: when the website refuses the pieces right where we start, ffmpeg would otherwise call the first
+        sound it gets "the start" although it comes from later in the film (everything after it then plays
+        too early: Black Bird episode 5 after 29 min). Now the refused part becomes silence instead."""
+        ss = max(0.0, start_seconds)
+        if self.start_time is None:
+            return ["-ss", f"{ss:.3f}"], "aresample=async=1:first_pts=0"
+        return (["-ss", f"{ss:.3f}", "-copyts"],
+                f"aresample=async=1:first_pts={round((self.start_time + ss) * SAMPLE_RATE)}")
+
     def read_s16(self, start_seconds, seconds):
         """Original audio [start, start+seconds) as int16 stereo (used as a fallback)."""
         for attempt in range(2):
+            pre, af = self._timing(start_seconds)
             cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *self._http_args(),
-                   "-ss", f"{max(0.0, start_seconds):.3f}", "-t", f"{seconds:.3f}", "-i", self.url, "-vn",
-                   "-af", "aresample=async=1:first_pts=0",
+                   *pre, "-i", self.url, "-vn", "-af", af, "-t", f"{seconds:.3f}",
                    "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "s16le", "pipe:1"]
             res = subprocess.run(cmd, capture_output=True, timeout=120)
             out = res.stdout
@@ -123,12 +145,9 @@ class MediaSource:
             return False, str(ex)
 
     def decoder(self, start_seconds, log=None):
-        # aresample async: the sound follows the stream's own clock. Without it a missing or broken piece of the
-        # stream (it happens on long films) is simply left out, and from then on the sound runs AHEAD of the
-        # picture by that much, until the next skip.
+        pre, af = self._timing(start_seconds)      # (why: see _timing)
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "warning", "-nostdin", *self._http_args(),
-               "-ss", f"{max(0.0, start_seconds):.3f}", "-i", self.url, "-vn",
-               "-af", "aresample=async=1:first_pts=0",
+               *pre, "-i", self.url, "-vn", "-af", af,
                "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "f32le", "pipe:1"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
         proc.err_tail = []

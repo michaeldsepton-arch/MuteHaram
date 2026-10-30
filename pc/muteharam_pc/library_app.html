@@ -56,10 +56,13 @@
   .sectionhead h2 { flex: 1; }
   #space { color: var(--dim); font-size: 13px; }
   #offline { display: none; background: #3a2422; color: #ffd9d5; padding: 10px 24px; }
+  .banner { background: #3a3122; color: #ffe9c2; padding: 10px 24px; }
 </style>
 </head>
 <body>
 <div id="offline">The MuteHaram helper is not running. Start it with <b>start_helper.bat</b> (in the MuteHaram pc folder); this window reconnects by itself.</div>
+<div id="oldExt" class="banner" style="display:none">The MuteHaram extension in Chrome is out of date, so expired website links can't be renewed and episodes added again aren't recognised.
+Open <b>chrome://extensions</b>, press the reload arrow on MuteHaram, then close and reopen this window.</div>
 <header>
   <h1>MuteHaram Library</h1>
   <div id="state">Loading ...</div>
@@ -281,6 +284,8 @@ async function refresh() {
     const r = await fetch("/api/library", { cache: "no-store" });
     data = await r.json();
     document.getElementById("offline").style.display = "none";
+    // the extension's library helper (library_bridge.js) is missing: Chrome still runs an older version of it
+    document.getElementById("oldExt").style.display = document.documentElement.dataset.mhExt === "1" ? "none" : "block";
     render();
     // queued films whose link expired before they were cleaned: fetch fresh links one at a time
     const stale = (data.items || []).find((x) => x.status === "needs_link" && x.player && !relinking.size

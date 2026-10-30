@@ -199,11 +199,14 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/queue/add":
             # the same episode added again (its link had expired): give the one in the library the fresh link
             from .library import probe_duration
-            same = lib.same_film(req, probe_duration(config.load()["ffprobe"], req.get("url", ""), req.get("headers")))
+            length = probe_duration(config.load()["ffprobe"], req.get("url", ""), req.get("headers"))
+            same = lib.same_film(req, length)
             if same:
                 lib.relink(same, req)
                 return self._json(200, {"ok": True, "id": same, "relinked": True})
             item_id = lib.add(req)
+            if length:
+                lib.update(item_id, duration=length)    # so it is recognised if it is added again later
             return self._json(200, {"ok": True, "id": item_id})
         if p == "/api/relink":
             # a fresh link the extension got from the episode's player: only if it is the same film (same length)

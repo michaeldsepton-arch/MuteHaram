@@ -11,6 +11,7 @@ pc/library/<id>/audio.opus      the finished cleaned sound
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -95,6 +96,19 @@ def probe_duration(ffprobe, url, headers, timeout=60):
         return float(out.strip().splitlines()[0])
     except Exception:
         return None
+
+
+def episode_key(title):
+    """("black bird", season, episode) from names like "Black Bird — S1 E6" or "Watch Black Bird - Episode 6";
+    None when the name has no episode number (a film)."""
+    t = re.sub(r"^\s*watch(ing)?\s+", "", str(title or "").lower())
+    e = re.search(r"(?<![a-z])(?:episode|ep\.?|e)\s*(\d+)", t)
+    if not e:
+        return None
+    s = re.search(r"(?:\bseason|\bs)\s*(\d+)", t)
+    show = re.split(r"\s[-–—:|]\s|\s(?:season\b|s\d|episode\b|ep\b|e\d)", t)[0]
+    show = re.sub(r"[^a-z0-9]+", " ", show).strip()
+    return (show, int(s.group(1)) if s else 1, int(e.group(1))) if show else None
 
 
 class Library:
@@ -183,14 +197,22 @@ class Library:
             return m
 
     def same_film(self, req, duration):
-        """An item already in the library that this link is (the same episode player, or the same length)."""
+        """An item already in the library that this link is: the same episode player, the same show and episode
+        number in the name, or the same length. A known, different length always means another film."""
         player = req.get("player")
         same_len = lambda x: bool(duration and x["duration"]) and abs(float(x["duration"]) - duration) < 1.0
-        for x in self.items():
+        other_len = lambda x: bool(duration and x["duration"]) and not same_len(x)
+        items = self.items()
+        for x in items:
             m = self.meta(x["id"]) or {}
-            if player and (m.get("req") or {}).get("player") == player and (same_len(x) or not (duration and x["duration"])):
+            if player and (m.get("req") or {}).get("player") == player and not other_len(x):
                 return x["id"]
-        for x in self.items():
+        ep = episode_key(req.get("title", ""))
+        if ep:
+            for x in items:
+                if episode_key(x["title"]) == ep and not other_len(x):
+                    return x["id"]
+        for x in items:
             if same_len(x):
                 return x["id"]
         return None
