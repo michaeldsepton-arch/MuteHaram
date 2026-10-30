@@ -37,7 +37,16 @@ def write_json(path, obj):
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=1)
-    os.replace(tmp, path)          # never a half-written file, even if the program is stopped right then
+    # never a half-written file, even if the program is stopped right then. Windows refuses the swap while
+    # another program is reading the file (the library window asks every 2 s): try again for a moment.
+    for attempt in range(40):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 39:
+                raise
+            time.sleep(0.05)
 
 
 # Streaming sites hand out video links that stop working after a few hours. The library keeps the
