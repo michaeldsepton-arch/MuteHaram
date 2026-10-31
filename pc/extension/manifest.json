@@ -1,14 +1,15 @@
 {
   "manifest_version": 3,
   "name": "MuteHaram",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Open the video on this page in the MuteHaram player with the music removed.",
   "permissions": [
     "webRequest",
     "tabs",
     "scripting",
     "contextMenus",
-    "storage"
+    "storage",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>",

@@ -250,21 +250,49 @@ function streamPayload(tabId, page) {
            referer: c.headers.Referer || page, subs: subsFound[tabId] || [] };
 }
 
+// Give a library film a fresh video link from its player. One at a time per film: the library window and the
+// check below may ask for the same film at once.
+const relinking = {};
+function relink(id, player) {
+  if (!relinking[id]) {
+    relinking[id] = (async () => {
+      await stateReady;
+      if (!/^https?:\/\//.test(player || "")) return { ok: false, error: "no player address saved for this film" };
+      const p = await freshStream(player);
+      if (!p) return { ok: false, error: "The website's player gave no video link (the site may be down, or this server stopped working). " +
+                                         "Open the episode on the website, start it playing, then use Add to the MuteHaram library." };
+      const r = await post("/api/relink", { id, ...p });
+      const j = await r.json().catch(() => ({}));
+      return r.ok ? { ok: true } : { ok: false, error: j.error || "helper said " + r.status };
+    })().catch((e) => ({ ok: false, error: e.message })).finally(() => { delete relinking[id]; });
+  }
+  return relinking[id];
+}
+
 // The library window asks (through library_bridge.js) for a fresh link for one of its films.
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
   if (!m || m.t !== "relink" || !(sender.url || "").startsWith(HELPER + "/")) return;
-  (async () => {
-    await stateReady;
-    if (!/^https?:\/\//.test(m.player || "")) return { ok: false, error: "no player address saved for this film" };
-    const p = await freshStream(m.player);
-    if (!p) return { ok: false, error: "The website's player gave no video link (the site may be down, or this server stopped working). " +
-                                       "Open the episode on the website, start it playing, then use Add to the MuteHaram library." };
-    const r = await post("/api/relink", { id: m.id, ...p });
-    const j = await r.json().catch(() => ({}));
-    return r.ok ? { ok: true } : { ok: false, error: j.error || "helper said " + r.status };
-  })().then(reply, (e) => reply({ ok: false, error: e.message }));
+  relink(m.id, m.player).then(reply);
   return true;
 });
+
+// Queued films whose link expired wait for a fresh one: fetch it every minute while Chrome runs, even with
+// the library window closed (a film that can't get one is tried again after 10 minutes).
+try {
+  chrome.alarms.create("mh-relink", { periodInMinutes: 1 });
+  chrome.alarms.onAlarm.addListener(async (al) => {
+    if (al.name !== "mh-relink") return;
+    try {
+      const lib = await (await fetch(HELPER + "/api/library", { cache: "no-store" })).json();
+      const tried = (await chrome.storage.session.get("mh_relink_tried")).mh_relink_tried || {};
+      const x = (lib.items || []).find((i) => i.status === "needs_link" && i.player && Date.now() - (tried[i.id] || 0) > 600000);
+      if (!x || relinking[x.id]) return;
+      tried[x.id] = Date.now();
+      await chrome.storage.session.set({ mh_relink_tried: tried });
+      await relink(x.id, x.player);
+    } catch (e) { /* helper not running: nothing to do */ }
+  });
+} catch (e) { /* no alarms (older browser): the library window still does it while open */ }
 
 function pausePage(tabId) {
   chrome.scripting.executeScript({
