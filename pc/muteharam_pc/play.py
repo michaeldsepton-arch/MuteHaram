@@ -264,6 +264,13 @@ class TabletFront:
         self.hub, self.doc = hub, doc
 
     def session_json(self, q):
+        # the tablet reports its loading problems (stalls, slow or failing downloads of the picture / the PC's sound)
+        # (written when a stall or a failure is new, else once a minute)
+        diag = (q.get("diag") or [""])[0]
+        key = re.sub(r"\d+ pieces at [\d.]+ Mbit/s", "", diag)
+        if diag and (key != getattr(self, "_diag_key", "") or time.time() - getattr(self, "_diag_t", 0) > 60):
+            self._diag_key, self._diag_t = key, time.time()
+            self.log(f"[tablet] {time.strftime('%H:%M:%S')} {diag}")
         if self.hub is None:
             return {"preparing": True, "failed": self.failed, "status": self.text,
                     "elapsed_s": int(time.time() - self.t0)}

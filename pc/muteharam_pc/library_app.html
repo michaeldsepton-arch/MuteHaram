@@ -107,7 +107,7 @@ function askExtension(id, player) {
     const key = Math.random().toString(36).slice(2);
     const done = (res) => { removeEventListener("message", on); clearTimeout(timer); resolve(res); };
     const on = (e) => { if (e.source === window && e.data && e.data.mhLib === "relinked" && e.data.key === key) done(e.data.res || {}); };
-    const timer = setTimeout(() => done({ ok: false, error: "the extension did not answer in time" }), 120000);
+    const timer = setTimeout(() => done({ ok: false, error: "the extension did not answer in time" }), 150000);
     addEventListener("message", on);
     postMessage({ mhLib: "relink", key, id, player }, "*");
   });
@@ -119,7 +119,7 @@ async function freshLink(x, player) {
   if (!player) throw new Error(`The website's link for "${x.title}" has expired. ` + REDO);
   relinking.add(x.id);
   relinkTried[x.id] = Date.now();
-  toast("The website's link has expired: getting a fresh one (10 to 40 seconds) ...");
+  toast("The website's link has expired: getting a fresh one (usually under a minute) ...");
   render();
   try {
     const r = await askExtension(x.id, player);

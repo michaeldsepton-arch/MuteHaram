@@ -203,24 +203,34 @@ async function playerAddress(tab) {
   }
 }
 
-// Open the episode's player in a hidden, muted tab and take the video link it loads (a fresh one).
-async function freshStream(player) {
-  const tab = await chrome.tabs.create({ url: player, active: false });
+// Open the episode's player out of sight (its own minimized window: with only the library open, Chrome has no
+// other window, and a new tab would pop up in front and vanish again), muted, and take the video link it loads.
+// visible: the second try, in a small window behind the others, for players that wait while minimized.
+async function freshStream(player, visible = false) {
+  let win = null, tab;
+  try {
+    win = await chrome.windows.create(visible
+      ? { url: player, focused: false, width: 420, height: 260, left: 0, top: 0 }
+      : { url: player, focused: false, state: "minimized" });
+    tab = win.tabs[0];
+  } catch (e) {
+    tab = await chrome.tabs.create({ url: player, active: false });
+  }
   const popups = new Set();                        // tabs the player opens (adverts): closed afterwards
-  const onCreated = (t) => { if (t.openerTabId === tab.id) popups.add(t.id); };
+  const onCreated = (t) => { if (t.openerTabId === tab.id || (win && t.windowId === win.id && t.id !== tab.id)) popups.add(t.id); };
   chrome.tabs.onCreated.addListener(onCreated);
   chrome.tabs.update(tab.id, { muted: true }).catch(() => {});
   try {
     const t0 = Date.now();
-    let nudged = false, seenAt = 0;
-    while (Date.now() - t0 < 45000) {
+    let nudges = 0, seenAt = 0;
+    while (Date.now() - t0 < 60000) {
       await new Promise((r) => setTimeout(r, 1000));
       await chrome.tabs.get(tab.id);                 // (also keeps the extension awake meanwhile)
       if ((found[tab.id] || []).length) {
         seenAt ||= Date.now();
         if (Date.now() - seenAt > 2500) return streamPayload(tab.id, player);   // its other playlists too
-      } else if (!nudged && Date.now() - t0 > 8000) {
-        nudged = true;                               // some players wait for "play"
+      } else if (Date.now() - t0 > 8000 + nudges * 12000 && nudges < 3) {
+        nudges++;                                    // some players wait for "play"
         chrome.scripting.executeScript({
           target: { tabId: tab.id, allFrames: true },
           func: () => {
@@ -234,7 +244,9 @@ async function freshStream(player) {
     return (found[tab.id] || []).length ? streamPayload(tab.id, player) : null;
   } finally {
     chrome.tabs.onCreated.removeListener(onCreated);
-    chrome.tabs.remove([tab.id, ...popups]).catch(() => {});
+    chrome.tabs.remove([...popups]).catch(() => {});
+    if (win) chrome.windows.remove(win.id).catch(() => {});
+    else chrome.tabs.remove(tab.id).catch(() => {});
   }
 }
 
@@ -258,7 +270,7 @@ function relink(id, player) {
     relinking[id] = (async () => {
       await stateReady;
       if (!/^https?:\/\//.test(player || "")) return { ok: false, error: "no player address saved for this film" };
-      const p = await freshStream(player);
+      const p = (await freshStream(player)) || (await freshStream(player, true));   // a second try if needed
       if (!p) return { ok: false, error: "The website's player gave no video link (the site may be down, or this server stopped working). " +
                                          "Open the episode on the website, start it playing, then use Add to the MuteHaram library." };
       const r = await post("/api/relink", { id, ...p });

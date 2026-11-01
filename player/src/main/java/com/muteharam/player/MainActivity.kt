@@ -31,6 +31,9 @@ import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -73,6 +76,14 @@ class MainActivity : AppCompatActivity() {
     // whether the film is playing, for the background check (the player itself may only be asked on the main thread)
     @Volatile
     private var playingNow = false
+
+    // loading problems, sent to the PC with each check so its log shows what the tablet waited for
+    @Volatile
+    private var diag = ""
+    private val loads = HashMap<String, LongArray>()   // "picture" / "PC sound" -> [loads, bytes, ms, errors]
+    private var lastLoadError = ""
+    private var stalls = 0
+    private var stallInfo = ""
 
     // where the film was, so that after a playback problem it carries on from there (not from the beginning)
     @Volatile
@@ -310,7 +321,8 @@ class MainActivity : AppCompatActivity() {
                 if (player == null) setStatus("Tap Settings and type the PC's address and token")
             } else {
                 try {
-                    val url = "http://" + host + ":47804/session.json?t=" + URLEncoder.encode(tok, "UTF-8")
+                    val url = "http://" + host + ":47804/session.json?t=" + URLEncoder.encode(tok, "UTF-8") +
+                        (if (diag.isEmpty()) "" else "&diag=" + URLEncoder.encode(diag, "UTF-8"))
                     val text = httpGet(url)
                     pollFailures = 0
                     val j = org.json.JSONObject(text)
@@ -405,6 +417,29 @@ class MainActivity : AppCompatActivity() {
         modeButton.visibility = if (show && current != null) View.VISIBLE else View.GONE
     }
 
+    private fun noteLoad(info: LoadEventInfo, error: IOException?) {
+        val which = if (info.uri.port == 47804) "PC sound" else "picture"
+        val a = loads.getOrPut(which) { LongArray(4) }
+        if (error == null) {
+            a[0]++; a[1] += info.bytesLoaded; a[2] += info.loadDurationMs
+        } else {
+            a[3]++
+            lastLoadError = which + ": " + (error.message ?: error.javaClass.simpleName).take(120)
+        }
+        updateDiag()
+    }
+
+    private fun updateDiag() {
+        val parts = ArrayList<String>()
+        parts.add("stalls " + stalls + (if (stallInfo.isEmpty()) "" else " (" + stallInfo + ")"))
+        for ((k, a) in loads) {
+            val mbit = if (a[2] > 0) a[1] * 8.0 / a[2] / 1000.0 else 0.0
+            parts.add(k + ": " + a[0] + " pieces at " + String.format("%.1f", mbit) + " Mbit/s, " + a[3] + " failed")
+        }
+        if (lastLoadError.isNotEmpty()) parts.add("last failure " + lastLoadError)
+        diag = parts.joinToString(" | ")
+    }
+
     private fun play(s: SessionInfo, host: String, token: String, withSubs: Boolean = true) {
         current = s
         curHost = host
@@ -413,6 +448,7 @@ class MainActivity : AppCompatActivity() {
         setStatus(("Starting " + s.title).trim())
         player?.release()
         playingNow = false
+        loads.clear(); lastLoadError = ""; stalls = 0; stallInfo = ""; diag = ""
 
         val http = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
@@ -456,6 +492,16 @@ class MainActivity : AppCompatActivity() {
             .setSeekBackIncrementMs(10_000)
             .setSeekForwardIncrementMs(30_000)
             .build()
+        p.addAnalyticsListener(object : AnalyticsListener {
+            override fun onLoadCompleted(t: AnalyticsListener.EventTime, info: LoadEventInfo, data: MediaLoadData) {
+                noteLoad(info, null)
+            }
+
+            override fun onLoadError(t: AnalyticsListener.EventTime, info: LoadEventInfo, data: MediaLoadData,
+                                     error: IOException, wasCanceled: Boolean) {
+                noteLoad(info, error)
+            }
+        })
         p.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 if (withSubs && s.subs.isNotEmpty()) {
@@ -511,7 +557,15 @@ class MainActivity : AppCompatActivity() {
                     setStatus(if (cleaned) "Sound: cleaned by the PC" else "Sound: ORIGINAL (the PC's cleaned sound is not playing)")
                     ui.postDelayed({ if (player === p) setStatus(null) }, 4000)
                 }
-                else if (state == Player.STATE_BUFFERING) setStatus("Loading ...")
+                else if (state == Player.STATE_BUFFERING) {
+                    setStatus("Loading ...")
+                    if (p.currentPosition > 1000) {
+                        stalls++
+                        val pos = p.currentPosition / 1000
+                        stallInfo = "last at " + (pos / 60) + ":" + String.format("%02d", pos % 60)
+                        updateDiag()
+                    }
+                }
             }
         })
         // pick the PC's cleaned sound from the very first moment (otherwise the film's own sound, WITH the music,
