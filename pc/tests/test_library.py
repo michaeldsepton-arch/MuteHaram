@@ -103,6 +103,10 @@ slept.clear()
 readings["now"] = (100.0, 7900.0)            # a video playing in the browser: busy card, little memory
 g.gate(5.0, lambda: released.append(1), stages.append)
 assert g.state == "light" and 5.0 in slept and not released, "a busy card alone never makes it wait, only slower"
+slept.clear()
+readings["now"] = (0.0, 7400.0 + 2800.0)     # a program holding 2.8 GB but idle (a paused live session): no waiting
+g.gate(5.0, lambda: released.append(1), stages.append)
+assert g.state == "full" and sum(slept) < 2 and not released, "memory held by an idle program never makes it wait"
 # a heavy program starts (4 GB of its own), and stops again after a minute
 script = iter([(90.0, 11400.0)] * 3 + [(95.0, 5000.0)] * 9 + [(3.0, 1000.0)] * 30)
 g.sample = lambda: next(script)

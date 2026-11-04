@@ -493,13 +493,17 @@ class GpuGovernor:
     Between blocks the cleaning is idle for a moment, so what the card does then is OTHER programs' work.
     Windows can't say which program uses how much memory, so ours is measured: the memory in use before our
     model is loaded vs. after its first block.
-      another program holding a lot of graphics memory (AI work, games)  -> wait (free our memory if we can)
+      another program holding a lot of graphics memory AND working the card (AI work, games, MuteHaram's own
+      live player while it cleans ahead)                                -> wait (free our memory if we can)
       the card very busy (but little memory: a video playing ...)       -> keep going, with a rest after each block
       otherwise                                                         -> full speed
-    Usage alone never makes it wait: playing a video in the browser can show 100% for moments.
+    Usage alone never makes it wait: playing a video in the browser can show 100% for moments. Memory alone
+    neither: a program that holds memory but sits idle (a paused live session for the tablet) would make it wait
+    forever, and our model is already loaded, so there is no new memory to find.
     """
     LIGHT_UTIL = 60.0                          # % of the card busy with others' work -> half speed
     OTHERS_MEM_MB = 2500.0                     # others holding more than this (desktop + browser use about 1 GB)
+    BUSY_UTIL = 25.0                           # ... and working the card at least this much
     QUIET_CHECKS = 3                           # this many quiet checks in a row (10 s apart) before carrying on
     FREE_AFTER_S = 20.0                        # still busy after this long: free our graphics memory
 
@@ -533,7 +537,7 @@ class GpuGovernor:
         return util, max(0.0, mem)
 
     def heavy(self, util, mem):
-        return mem >= self.OTHERS_MEM_MB
+        return mem >= self.OTHERS_MEM_MB and util >= self.BUSY_UTIL
 
     def gate(self, block_seconds, release, set_stage):
         """Call between blocks. Returns when the next block may run (maybe after a rest or a long wait).
