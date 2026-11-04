@@ -122,12 +122,12 @@ class MediaSource:
         """Original audio [start, start+seconds) as int16 stereo (used as a fallback)."""
         for attempt in range(2):
             pre, af = self._timing(start_seconds)
+            # (no "-t": with the stream's own clock kept it would count from the film's start, not from here;
+            # the wanted amount is read and ffmpeg stopped instead)
             cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin", *self._http_args(),
-                   *pre, "-i", self.url, "-vn", "-af", af, "-t", f"{seconds:.3f}",
+                   *pre, "-i", self.url, "-vn", "-af", af,
                    "-ac", str(CHANNELS), "-ar", str(SAMPLE_RATE), "-f", "s16le", "pipe:1"]
-            res = subprocess.run(cmd, capture_output=True, timeout=120)
-            out = res.stdout
-            err = res.stderr.decode("utf-8", "replace")
+            out, err = self._read_bytes(cmd, int(round(seconds * SAMPLE_RATE)) * 2 * CHANNELS, timeout=120)
             if out:
                 n = len(out) // (2 * CHANNELS) * 2 * CHANNELS
                 return np.frombuffer(out[:n], dtype=np.int16).reshape(-1, CHANNELS)
@@ -135,6 +135,29 @@ class MediaSource:
                 continue
             why = err.strip().splitlines()
             raise RuntimeError("ffmpeg returned no audio: " + (" | ".join(why[-3:]) or f"exit code {res.returncode}"))
+
+    @staticmethod
+    def _read_bytes(cmd, nbytes, timeout):
+        """Run ffmpeg until it has written nbytes (or ended / timed out) -> (bytes, its error text)."""
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        err = []
+        threading.Thread(target=lambda: err.append(proc.stderr.read()), daemon=True).start()
+        timer = threading.Timer(timeout, proc.kill)
+        timer.start()
+        try:
+            buf = bytearray()
+            while len(buf) < nbytes:
+                chunk = proc.stdout.read(min(1 << 16, nbytes - len(buf)))
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            timer.cancel()
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+        time.sleep(0.05)
+        return bytes(buf), (err[0] if err else b"").decode("utf-8", "replace")
 
     def probe(self, start_seconds=0.0):
         """Can we really decode audio from this source? -> (ok, reason)"""
