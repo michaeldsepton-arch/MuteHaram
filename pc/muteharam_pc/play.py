@@ -242,6 +242,8 @@ class TabletFront:
         self.failed = False
         self.hub = None
         self.doc = None
+        self.files = {}                  # extra files the tablet may fetch (a library film's compressed sound)
+        self.audio_path = "/audio.wav"   # where the tablet gets the cleaned sound
 
     # ---- what the audio server reads (nothing until the session is ready)
     @property
@@ -387,6 +389,19 @@ def run_preclean(a, r, session, problem, log):
     log("pre-cleaning finished:", opus)
 
 
+def adaptive_picture(url, headers, alts):
+    """The website's list of qualities (master playlist) for the same film as this one-quality playlist, or None."""
+    if not str(url).startswith(("http://", "https://")) or classify(url, headers)["kind"] == "master":
+        return None
+    folder = lambda u: u.split("?")[0].rsplit("/", 1)[0]
+    cands = [url.replace("/index.m3u8", "/master.m3u8")] if "/index.m3u8" in url else []
+    cands += [u for u in alts if "master" in u.lower() and u not in cands]
+    for u in cands:
+        if folder(u) == folder(url) and classify(u, headers)["kind"] == "master":   # same film, same server
+            return u
+    return None
+
+
 def run_library(a, S, log):
     """Watch a film from the library: the picture from the website, the sound from the finished file (no GPU)."""
     from .library import FileSession
@@ -410,10 +425,20 @@ def run_library(a, S, log):
     if a.tablet:
         front, srv = start_tablet_front(a, log)
         front.stage("Opening the cleaned sound")
+        # the website's list of picture qualities for this film, so the tablet picks one its Wi-Fi can carry
+        # (one fixed quality, often 1080p, kept running dry: a pause every 20-45 s)
+        master = adaptive_picture(r["mpv_url"], r["headers"], req.get("alts") or [])
+        if master:
+            FORCE_DIRECT.add(master)
+            r["mpv_url"] = master
+            log("picture: the website's list of qualities (the tablet adapts to its Wi-Fi)")
         if is_direct(r["mpv_url"]) and r["mpv_url"].startswith(("http://", "https://")):
             notes[r["mpv_url"]] = classify(r["mpv_url"], r["headers"])      # tells the tablet it is a playlist (HLS)
             log(f"picture {r['mpv_url'][:90]}: {notes[r['mpv_url']]['kind']} - {notes[r['mpv_url']]['note']}")
         sess = FileSession(audio, prog["total_frames"], cfg["ffmpeg"], log)
+        # the finished sound file as it is (160 kb/s instead of 1.4 Mbit/s raw), for tablet apps that can play it
+        front.files["/audio.opus"] = audio
+        front.audio_path = "/audio.opus"
         return run_tablet(a, cfg, r, notes, sess, None, r["headers"], log, front, srv)
     cmd = [cfg["mpv"], r["mpv_url"], f"--audio-file={audio}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}",
            f"--script={os.path.join(HERE, 'mpv_pip.lua')}"]
@@ -492,7 +517,7 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
         log("[tablet] the first seconds are taking long; starting anyway")
     doc = {"id": int(time.time() * 1000), "title": title or "", "video": video, "kind": kind,
            "headers": clean_headers(vheaders),
-           "subs": subs, "start": max(0.0, a.start), "duration": session.duration}
+           "subs": subs, "start": max(0.0, a.start), "duration": session.duration, "audio": front.audio_path}
     front.ready(hub, doc)
     log(f"tablet session ready: {kind} picture, cleaned audio on port {a.tablet_port} "
         f"({int(time.time() - front.t0)} s after pressing Send)")

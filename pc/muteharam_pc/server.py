@@ -4,6 +4,7 @@ file over HTTP (with Range support so players can seek). Nothing is stored as a
 WAV: bytes are produced on demand from the engine's blocks.
 """
 import json
+import os
 import re
 import secrets
 import struct
@@ -62,6 +63,33 @@ def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
                 self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
             self.end_headers()
 
+        def _file(self, fpath):
+            """A finished file (a library film's cleaned sound, compressed: ~8x less Wi-Fi than the raw sound)."""
+            total = os.path.getsize(fpath)
+            start, end, partial = self._range(total)
+            if start >= total:
+                self.send_error(416)
+                return
+            self.send_response(206 if partial else 200)
+            self.send_header("Content-Type", "audio/ogg")
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Content-Length", str(end - start + 1))
+            if partial:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+            self.end_headers()
+            try:
+                with open(fpath, "rb") as f:
+                    f.seek(start)
+                    left = end - start + 1
+                    while left > 0:
+                        chunk = f.read(min(left, 1 << 20))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        left -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+
         def do_HEAD(self):
             self.server.last_request = time.time()
             if not self._authorised():
@@ -95,6 +123,9 @@ def make_server(session, host="127.0.0.1", port=0, token=None, routes=None):
                 self.end_headers()
                 self.wfile.write(body)
                 return
+            served = (getattr(session, "files", None) or {}).get(path)
+            if served:
+                return self._file(served)
             if path != "/audio.wav":
                 self.send_error(404)
                 return

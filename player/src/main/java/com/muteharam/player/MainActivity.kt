@@ -473,7 +473,7 @@ class MainActivity : AppCompatActivity() {
         if (s.kind == "dash") itemBuilder.setMimeType(MimeTypes.APPLICATION_MPD)
         val video = DefaultMediaSourceFactory(dataFactory).createMediaSource(itemBuilder.build())
 
-        val audioUrl = "http://" + host + ":47804/audio.wav?t=" + URLEncoder.encode(token, "UTF-8")
+        val audioUrl = "http://" + host + ":47804" + s.audio + "?t=" + URLEncoder.encode(token, "UTF-8")
         // the PC may need ~15 s to open the film after a switch or a skip: wait for it instead of giving up
         val audio = ProgressiveMediaSource.Factory(
             DefaultHttpDataSource.Factory().setConnectTimeoutMs(15000).setReadTimeoutMs(90000)
@@ -552,7 +552,7 @@ class MainActivity : AppCompatActivity() {
                     // say which sound is playing for a few seconds, so it is obvious if the PC's audio is not used
                     val audioGroups = p.currentTracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
                     val cleaned = audioGroups.any { g ->
-                        g.isSelected && (0 until g.length).any { g.getTrackFormat(it).sampleMimeType == MimeTypes.AUDIO_RAW }
+                        g.isSelected && (0 until g.length).any { g.getTrackFormat(it).sampleMimeType == s.pcAudioMime }
                     }
                     setStatus(if (cleaned) "Sound: cleaned by the PC" else "Sound: ORIGINAL (the PC's cleaned sound is not playing)")
                     ui.postDelayed({ if (player === p) setStatus(null) }, 4000)
@@ -571,7 +571,7 @@ class MainActivity : AppCompatActivity() {
         // pick the PC's cleaned sound from the very first moment (otherwise the film's own sound, WITH the music,
         // can play for a few seconds until the choice below switches over)
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-            .setPreferredAudioMimeType(MimeTypes.AUDIO_RAW)
+            .setPreferredAudioMimeType(s.pcAudioMime)
             .build()
         p.setMediaSource(MergingMediaSource(video, audio), (s.startSeconds * 1000).toLong())
         p.prepare()
@@ -587,7 +587,7 @@ class MainActivity : AppCompatActivity() {
         val groups = tracks.groups.filter { it.type == C.TRACK_TYPE_AUDIO }
         if (groups.size < 2) return
         val pc = groups.firstOrNull { g ->
-            (0 until g.length).any { g.getTrackFormat(it).sampleMimeType == MimeTypes.AUDIO_RAW }
+            (0 until g.length).any { g.getTrackFormat(it).sampleMimeType == (current?.pcAudioMime ?: MimeTypes.AUDIO_RAW) }
         } ?: return
         if (pc.isSelected) return
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
