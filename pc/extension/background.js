@@ -9,6 +9,10 @@ const HELPER = "http://127.0.0.1:47800";
 const MEDIA_RE = /\.(m3u8|mpd|mp4|m4v|webm|mkv|mov)(\?|#|$)/i;
 const SUB_RE = /\.(vtt|srt|ass|ssa)(\?|#|$)/i;
 const SUB_TYPE_RE = /^(text\/vtt|application\/x-subrip|text\/srt|application\/ttml\+xml)/i;
+// subtitle services often send the file as plain text from an address like .../id/123?format=srt
+const SUB_URL_RE = /(subtitle|caption|\/subs?\/|[?&](format|type)=(srt|vtt)|wyzie|opensubtitles|\.srt|\.vtt)/i;
+const PLAIN_TYPE_RE = /^(text\/plain|application\/octet-stream|text\/html)/i;
+const texts = {};     // tabId -> text-like files the page loaded (sent with each request, for the logs)
 const SKIP_RE = /(\.ts(\?|$)|\.m4s(\?|$)|\.aac(\?|$)|\.vtt|\.srt|\/seg[-_]?\d|thumb|sprite|storyboard|\.mp4\.(jpg|png))/i;
 // What the SERVER says a response is (catches playlists with odd file names):
 const PLAYLIST_TYPE_RE = /(mpegurl|dash\+xml|vnd\.apple)/i;
@@ -85,8 +89,14 @@ function onHeadersReceived(d) {
   if (d.statusCode >= 400) return;
   let ct = "";
   for (const h of d.responseHeaders || []) if (h.name.toLowerCase() === "content-type") ct = h.value || "";
-  // caption files whose address doesn't end in .vtt/.srt (some sites): known by what the server says they are
-  if (SUB_TYPE_RE.test(ct) && d.tabId >= 0 && !SUB_RE.test(d.url)) {
+  if (d.tabId >= 0 && /^(text\/|application\/(json|x-subrip|ttml|octet-stream))/i.test(ct) && !/\.(js|css)(\?|$)/i.test(d.url)) {
+    const l = (texts[d.tabId] ||= []);
+    l.push(ct.split(";")[0] + " " + d.url.slice(0, 200));
+    if (l.length > 40) l.shift();
+  }
+  // caption files whose address doesn't end in .vtt/.srt (some sites): known by what the server says they are,
+  // or plain text from an address that says it is a subtitle
+  if ((SUB_TYPE_RE.test(ct) || (PLAIN_TYPE_RE.test(ct) && SUB_URL_RE.test(d.url))) && d.tabId >= 0 && !SUB_RE.test(d.url)) {
     const l = (subsFound[d.tabId] ||= []);
     if (!l.includes(d.url)) l.push(d.url);
     if (l.length > 12) l.shift();
@@ -111,9 +121,9 @@ function listen(event, fn, extra) {
 listen(chrome.webRequest.onSendHeaders, onSendHeaders, ["requestHeaders", "extraHeaders"]);
 listen(chrome.webRequest.onHeadersReceived, onHeadersReceived, ["responseHeaders", "extraHeaders"]);
 
-chrome.tabs.onRemoved.addListener((id) => { delete found[id]; delete subsFound[id]; delete recent[id]; save(); });
+chrome.tabs.onRemoved.addListener((id) => { delete found[id]; delete subsFound[id]; delete recent[id]; delete texts[id]; save(); });
 chrome.tabs.onUpdated.addListener((id, info) => {
-  if (info.status === "loading" && info.url) { found[id] = []; subsFound[id] = []; recent[id] = []; save(); } // new page
+  if (info.status === "loading" && info.url) { found[id] = []; subsFound[id] = []; recent[id] = []; texts[id] = []; save(); } // new page
 });
 
 function candidateList(tabId) {
@@ -428,6 +438,9 @@ async function openInPlayer(tab, pip, tablet, queue) {
     const s = streamPayload(tab.id, tab.url);
     if (s) {
       payload = { ...s, start, page: tab.url, title: await pageTitle(tab), player: await playerAddress(tab), pip };
+      // for the logs: the text files the page loaded (where a site's subtitles came from, when none were found)
+      post("/debug", { page: tab.url, requests: ["subtitles found: " + (s.subs.join(" ") || "none"), ...(texts[tab.id] || [])],
+                       orphans: [] }).catch(() => {});
     } else {
       // No stream address seen. Save a report of what the page loaded (so it can be examined)
       // and still try the page address itself: yt-dlp can find the video on some sites.
