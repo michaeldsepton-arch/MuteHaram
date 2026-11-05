@@ -161,15 +161,8 @@ from muteharam_pc.library import link_alive
 state = {"key": 200}
 class Site(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = {"/master.m3u8": b"#EXTM3U
-#EXT-X-STREAM-INF:BANDWIDTH=1
-v.m3u8
-",
-                "/v.m3u8": b'#EXTM3U
-#EXT-X-KEY:METHOD=AES-128,URI="/key"
-#EXTINF:6,
-seg0
-',
+        body = {"/master.m3u8": b"#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n",
+                "/v.m3u8": b'#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI="/key"\n#EXTINF:6,\nseg0\n',
                 "/key": b"k" * 16, "/seg0": b"x" * 10}.get(self.path)
         code = state["key"] if self.path == "/key" else (200 if body else 404)
         self.send_response(code); self.send_header("Content-Length", str(len(body or b"") if code == 200 else 0)); self.end_headers()
