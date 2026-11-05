@@ -68,15 +68,37 @@ def mpv_header_args(headers):
 
 
 def link_alive(url, headers, timeout=12):
-    """False only when the site clearly refuses the link (expired); unsure (no network ...) counts as alive."""
+    """False only when the site clearly refuses the link (expired); unsure (no network ...) counts as alive.
+    A playlist is followed to its first quality, its decryption key and its first piece: some sites keep
+    answering the playlist long after the key (and so the film) stopped working."""
+    import re
     import urllib.error
     import urllib.request
+    from urllib.parse import urljoin
     if not str(url).startswith(("http://", "https://")):
         return True
+    hdrs = {k: v for k, v in (headers or {}).items() if k.lower() != "cookie"}
+
+    def get(u, n):
+        with urllib.request.urlopen(urllib.request.Request(u, headers=hdrs), timeout=timeout) as r:
+            return r.read(n)
     try:
-        req = urllib.request.Request(url, headers={k: v for k, v in (headers or {}).items() if k.lower() != "cookie"})
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            r.read(1)
+        body = get(url, 1 << 20)
+        for _ in range(2):                         # quality list -> one quality's playlist
+            text = body.decode("utf-8", "replace")
+            if not text.lstrip(chr(0xFEFF) + " " + chr(13) + chr(10)).startswith("#EXTM3U"):
+                return True
+            refs = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
+            if "#EXT-X-STREAM-INF" in text and refs:
+                url = urljoin(url, refs[0])
+                body = get(url, 1 << 20)
+                continue
+            key = re.search(r'#EXT-X-KEY:[^\n]*URI="([^"]+)"', text)
+            if key:
+                get(urljoin(url, key.group(1)), 64)
+            if refs:
+                get(urljoin(url, refs[0]), 1)
+            return True
         return True
     except urllib.error.HTTPError as ex:
         return ex.code not in (401, 403, 404, 410)

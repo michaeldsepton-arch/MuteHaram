@@ -154,4 +154,32 @@ assert next(x for x in lib2.items() if x["id"] == e2)["status"] == "needs_link" 
 lib2.relink(e2, {"url": "https://x/alive.m3u8"})
 assert lib2.meta(e2)["status"] == "queued"
 r2.stop()
+# an expired link is seen even when only the decryption key is refused (the playlist itself still loads)
+import http.server
+import threading as _th
+from muteharam_pc.library import link_alive
+state = {"key": 200}
+class Site(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = {"/master.m3u8": b"#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1
+v.m3u8
+",
+                "/v.m3u8": b'#EXTM3U
+#EXT-X-KEY:METHOD=AES-128,URI="/key"
+#EXTINF:6,
+seg0
+',
+                "/key": b"k" * 16, "/seg0": b"x" * 10}.get(self.path)
+        code = state["key"] if self.path == "/key" else (200 if body else 404)
+        self.send_response(code); self.send_header("Content-Length", str(len(body or b"") if code == 200 else 0)); self.end_headers()
+        if code == 200: self.wfile.write(body)
+    def log_message(self, *a): pass
+site = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Site)
+_th.Thread(target=site.serve_forever, daemon=True).start()
+url = f"http://127.0.0.1:{site.server_address[1]}/master.m3u8"
+assert link_alive(url, {}), "a working link"
+state["key"] = 403
+assert not link_alive(url, {}), "the key is refused: the link has expired"
+site.shutdown()
 print("LIBRARY TEST OK")
