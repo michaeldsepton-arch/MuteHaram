@@ -55,20 +55,63 @@ y = decode(src, 9.0)
 print(f"from 9 s: decoded {len(y) / SAMPLE_RATE:.2f} s")
 assert abs(len(y) / SAMPLE_RATE - 4.0) < 0.3
 
-# with the stream's own clock (what the player and the library use: duration() reads where the film starts)
-src.duration()
-assert src.start_time is not None
-z = decode(src, 0.0)
-assert abs(len(z) / SAMPLE_RATE - 13.0) < 0.3 and level(z, 5.5, 7.5) < 0.01 and level(z, 9, 12) > 0.03
-# starting INSIDE the missing part (the website refused those pieces; the cleaning reconnected there): the rest of
-# the missing part must be silence, not the sound from after it moved forward (Black Bird episode 5 after 29 min)
 # the quick check before cleaning reads a few seconds from anywhere in the film: always the full amount
-# (with the stream's own clock a time limit counted from the film's start: nothing from the middle, a film failed)
 for at in (0.0, 9.0):
     got = len(src.read_s16(at, 2.0)) / SAMPLE_RATE
     assert abs(got - 2.0) < 0.05, f"read_s16 from {at} s gave {got:.2f} s"
-w = decode(src, 6.0)
-print(f"from 6 s (inside the gap): decoded {len(w) / SAMPLE_RATE:.2f} s; 0-1.8 s {level(w, 0, 1.8):.4f}, 2.5-6.5 s {level(w, 2.5, 6.5):.3f}")
-assert abs(len(w) / SAMPLE_RATE - 7.0) < 0.3, "the sound after the gap must stay at its own time"
-assert level(w, 0, 1.8) < 0.01 and level(w, 2.5, 6.5) > 0.03
+
+# a website that refuses minutes of pieces (Black Bird episode 5 after 29 min): the refused part must stay as time
+# (silence), and a start INSIDE it must not be trusted (ffmpeg calls the first sound it gets "the start")
+import functools  # noqa: E402
+import http.server  # noqa: E402
+import re  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+
+hls = os.path.join(tmp, "hls")
+os.makedirs(hls)
+subprocess.run([cfg["ffmpeg"], "-y", "-loglevel", "error", "-f", "lavfi", "-i", "anoisesrc=d=60:c=pink:r=44100:a=0.3",
+                "-c:a", "aac", "-ac", "2", "-hls_time", "6", "-hls_list_size", "0", "-f", "hls",
+                os.path.join(hls, "s.m3u8")], check=True)
+pieces = [float(x) for x in re.findall(r"#EXTINF:([0-9.]+)", open(os.path.join(hls, "s.m3u8")).read())]
+starts = np.cumsum([0.0] + pieces)
+gap0, gap1 = starts[3], starts[6]                      # pieces 3-5 refused
+
+
+class Refusing(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        m = re.search(r"s(\d+)\.ts", self.path)
+        if m and 3 <= int(m.group(1)) <= 5:
+            return self.send_error(403)
+        return super().do_GET()
+
+    def log_message(self, *a):
+        pass
+
+
+web_srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(Refusing, directory=hls))
+threading.Thread(target=web_srv.serve_forever, daemon=True).start()
+web = MediaSource(f"http://127.0.0.1:{web_srv.server_address[1]}/s.m3u8", ffmpeg=cfg["ffmpeg"], ffprobe=cfg["ffprobe"])
+full = decode(MediaSource(os.path.join(hls, "s.m3u8"), ffmpeg=cfg["ffmpeg"], ffprobe=cfg["ffprobe"]), 0.0)[:, 0]
+
+
+def first_seconds(src, start):
+    p = src.decoder(start)
+    first = p.stdout.read(SAMPLE_RATE * 4 * CHANNELS)
+    time.sleep(0.5)
+    caught = p.skipped_early
+    p.kill()
+    return first, caught
+
+
+v = decode(web, 0.0)[:, 0]
+print(f"website refusing {gap0:.0f}-{gap1:.0f} s: decoded {len(v) / SAMPLE_RATE:.1f} s")
+assert abs(len(v) / SAMPLE_RATE - 60.0) < 0.5, "the refused part must be kept as time, not closed up"
+assert np.abs(v[int((gap0 + 1) * SAMPLE_RATE):int((gap1 - 1) * SAMPLE_RATE)]).max() < 1e-3
+after = int((gap1 + 2) * SAMPLE_RATE)
+assert np.allclose(v[after:after + 2000], full[after:after + 2000], atol=1e-3), \
+    "the film after the refused part must stay at its own time"
+assert first_seconds(web, (gap0 + gap1) / 2)[1], "a start inside the refused part must be caught"
+assert not first_seconds(web, 1.0)[1]
+web_srv.shutdown()
 print("SOURCE GAP TEST OK")

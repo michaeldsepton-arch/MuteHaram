@@ -108,15 +108,12 @@ class MediaSource:
 
         aresample async: the sound follows the stream's own clock. Without it a missing or broken piece of the
         stream (it happens on long films) is simply left out, and from then on the sound runs AHEAD of the
-        picture by that much. The stream's clock is kept (-copyts) and the filter told where the start really
-        is: when the website refuses the pieces right where we start, ffmpeg would otherwise call the first
-        sound it gets "the start" although it comes from later in the film (everything after it then plays
-        too early: Black Bird episode 5 after 29 min). Now the refused part becomes silence instead."""
-        ss = max(0.0, start_seconds)
-        if self.start_time is None:
-            return ["-ss", f"{ss:.3f}"], "aresample=async=1:first_pts=0"
-        return (["-ss", f"{ss:.3f}", "-copyts"],
-                f"aresample=async=1:first_pts={round((self.start_time + ss) * SAMPLE_RATE)}")
+        picture by that much. (Keeping the stream's clock with -copyts instead was tried: on some sites it lands
+        16 s off or gives silence. A start inside pieces the website refuses is caught in decoder() instead.)"""
+        # dts_delta_threshold: ffmpeg treats a jump in the stream's clock of more than 10 s as a glitch and closes
+        # it up. When the website refuses minutes of pieces that moved everything after 50 s+ too early.
+        return (["-dts_delta_threshold", "100000", "-ss", f"{max(0.0, start_seconds):.3f}"],
+                "aresample=async=1:first_pts=0")
 
     def read_s16(self, start_seconds, seconds):
         """Original audio [start, start+seconds) as int16 stereo (used as a fallback)."""
@@ -176,10 +173,18 @@ class MediaSource:
         proc.err_tail = []
         shown = [0]
 
+        # pieces the website refuses BEFORE any sound came: ffmpeg skips them and calls the first sound it gets
+        # "the start", although it is from later in the film (everything after would play too early: Black Bird
+        # episode 5 after 29 min). Such a start is not trusted (see Session._read_until_inner).
+        proc.got_audio = False
+        proc.skipped_early = False
+
         def drain():
             for line in proc.stderr:
                 text = line.decode("utf-8", "replace").strip()
                 proc.err_tail = (proc.err_tail + [text])[-5:]
+                if "skipping" in text.lower() and not proc.got_audio:
+                    proc.skipped_early = True
                 if log and shown[0] < 20 and any(k in text.lower() for k in ("segment", "skip", "discontinu", "non-monoton", "failed")):
                     shown[0] += 1
                     log("source: " + text[:200])
@@ -425,6 +430,14 @@ class Session:
             if not raw:
                 self._eof = True
                 break
+            if not getattr(dec, "got_audio", True):
+                time.sleep(0.3)                  # (ffmpeg's messages come a moment later than its sound)
+                if getattr(dec, "skipped_early", False):
+                    self.log("source: the website refused the pieces where this starts; not trusting this start")
+                    self._kill_decoder()
+                    self._eof = True
+                    break
+                dec.got_audio = True
             raw = raw[: len(raw) // (CHANNELS * 4) * CHANNELS * 4]
             a = np.frombuffer(raw, dtype=np.float32).reshape(-1, CHANNELS)
             self._buf = np.concatenate([self._buf, a])

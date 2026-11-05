@@ -8,6 +8,7 @@
 const HELPER = "http://127.0.0.1:47800";
 const MEDIA_RE = /\.(m3u8|mpd|mp4|m4v|webm|mkv|mov)(\?|#|$)/i;
 const SUB_RE = /\.(vtt|srt|ass|ssa)(\?|#|$)/i;
+const SUB_TYPE_RE = /^(text\/vtt|application\/x-subrip|text\/srt|application\/ttml\+xml)/i;
 const SKIP_RE = /(\.ts(\?|$)|\.m4s(\?|$)|\.aac(\?|$)|\.vtt|\.srt|\/seg[-_]?\d|thumb|sprite|storyboard|\.mp4\.(jpg|png))/i;
 // What the SERVER says a response is (catches playlists with odd file names):
 const PLAYLIST_TYPE_RE = /(mpegurl|dash\+xml|vnd\.apple)/i;
@@ -81,9 +82,18 @@ function onSendHeaders(d) {
 }
 
 function onHeadersReceived(d) {
-  if (d.statusCode >= 400 || SKIP_RE.test(d.url) || MEDIA_RE.test(d.url)) return;
+  if (d.statusCode >= 400) return;
   let ct = "";
   for (const h of d.responseHeaders || []) if (h.name.toLowerCase() === "content-type") ct = h.value || "";
+  // caption files whose address doesn't end in .vtt/.srt (some sites): known by what the server says they are
+  if (SUB_TYPE_RE.test(ct) && d.tabId >= 0 && !SUB_RE.test(d.url)) {
+    const l = (subsFound[d.tabId] ||= []);
+    if (!l.includes(d.url)) l.push(d.url);
+    if (l.length > 12) l.shift();
+    save();
+    return;
+  }
+  if (SKIP_RE.test(d.url) || MEDIA_RE.test(d.url)) return;
   if (!(PLAYLIST_TYPE_RE.test(ct) || VIDEO_TYPE_RE.test(ct))) return;
   const c = { url: d.url, headers: reqHeaders.get(d.requestId) || {}, t: Date.now(), how: "content-type " + ct };
   if (d.tabId >= 0) add((found[d.tabId] ||= []), c);
