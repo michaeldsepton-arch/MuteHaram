@@ -107,17 +107,20 @@ def link_alive(url, headers, timeout=12):
 
 
 def probe_duration(ffprobe, url, headers, timeout=60):
-    """Length of a video in seconds (None when it can't be measured)."""
-    cmd = [ffprobe, "-v", "error", "-rw_timeout", "20000000"]
-    if headers:
-        cmd += ["-headers", "".join(f"{k}: {v}\r\n" for k, v in headers.items())]
-    cmd += ["-show_entries", "format=duration", "-of", "csv=p=0", url]
-    try:
-        out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
-                             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0).stdout
-        return float(out.strip().splitlines()[0])
-    except Exception:
-        return None
+    """Length of a video in seconds (None when it can't be measured). Some sites disguise their video pieces
+    (names that don't look like video): ffprobe refuses those unless told to accept them, so it tries again."""
+    for picky in ([], ["-extension_picky", "0"]):
+        cmd = [ffprobe, "-v", "error", "-rw_timeout", "20000000", *picky]
+        if headers:
+            cmd += ["-headers", "".join(f"{k}: {v}" + chr(13) + chr(10) for k, v in headers.items())]
+        cmd += ["-show_entries", "format=duration", "-of", "csv=p=0", url]
+        try:
+            out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                                 creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0).stdout
+            return float(out.strip().splitlines()[0])
+        except Exception:
+            continue
+    return None
 
 
 def episode_key(title):
