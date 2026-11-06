@@ -16,6 +16,7 @@ from muteharam_pc.scenes import SceneScanner, merge  # noqa: E402
 
 SCENE = set(range(100, 108)) | set(range(400, 402))   # seconds that show something to cover
 MISSED_BY_CLIP = set(range(300, 310))                  # a scene CLIP does not notice: the 8-second check finds it
+NUDE_ALONE = {200, 500, 502}                           # NudeNet finds: 200 alone (a false alarm), 500 + 502 a pair
 
 
 class FakeDetector:
@@ -23,7 +24,8 @@ class FakeDetector:
         self.asked = []
 
     def nudenet(self, frame):
-        return "clear"                                   # only the model sees these scenes (like kissing)
+        t = int(frame[0, 0, 0]) * 256 + int(frame[0, 0, 1])
+        return "nudity" if t in NUDE_ALONE else "clear"
 
     def clip(self, frame):
         t = int(frame[0, 0, 0]) * 256 + int(frame[0, 0, 1])
@@ -48,10 +50,11 @@ s.det = FakeDetector()
 s._scan_from(0.0)
 covers = merge(s.covers)
 print("covers:", covers, "| model checks:", len(s.det.asked))
-assert covers == [[95.0, 112.0], [295.0, 314.0], [395.0, 406.0]], covers   # (300 s found at 304, looked back)
+assert covers == [[95.0, 112.0], [295.0, 314.0], [395.0, 406.0], [497.0, 507.0]], covers   # (300: found at 304, looked back)
+assert not any(a <= 200 <= b for a, b in covers), "a single NudeNet find (no other sign) is not covered"
 assert len(s.det.asked) < 130, "between scenes the model only looks every 8 s (and at what the fast checks flag)"
 assert all(t in s.det.asked for t in range(108, 113)), "after a scene the model checks every second until 5 clear"
-assert not any(t in s.det.asked for t in range(101, 108)), "inside a scene a sure fast check is enough (no 3 s model answer)"
+assert not any(t in s.det.asked for t in range(102, 108)), "CLIP sure for 3 s starts it; inside, a sure fast check is enough"
 assert merge([[1, 5], [5.5, 9], [20, 30]]) == [[1, 9], [20, 30]]
 
 # the real frame reader (one frame per second, in memory), on a synthetic test pattern video

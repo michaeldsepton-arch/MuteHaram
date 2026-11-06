@@ -25,9 +25,12 @@ import numpy as np
 
 OLLAMA = "http://127.0.0.1:11434"
 MODEL = "gemma4:e4b"
-# short on purpose: the model reads the question for every frame (a long one took ~2 s more each time)
-QUESTION = ("Does this image show nudity, a person in underwear or swimwear, sexual activity, or two people "
-            "kissing? Answer only yes or no.")
+# Measured on a film with many such scenes: the plain question ("nudity, underwear, sexual, kissing?") made the
+# small model answer "no" to almost everything a larger model flagged. This wording asks about modesty instead.
+QUESTION = ("This frame is from a film. A family that keeps strict modesty wants to skip any shot that shows: "
+            "bare skin of the chest, back, belly or thighs; cleavage; underwear, lingerie or swimwear; nudity; "
+            "people in bed together intimately; sexual activity or touching; or kissing. Does this shot show "
+            "any of these? Answer only yes or no.")
 CLIP_MODEL = "openai/clip-vit-base-patch32"
 # what CLIP compares each frame with: the first group is what to cover, the rest is ordinary film
 CLIP_COVER = ["two people kissing on the lips", "a couple kissing passionately", "a sexual scene in bed",
@@ -39,6 +42,11 @@ CLIP_OTHER = ["people talking to each other", "a man and a woman talking face to
               "a person hugging another person", "people in an office"]
 CLIP_FLAG = 0.30          # this much of CLIP's choice on the "cover" group: ask the vision model
 CLIP_SURE = 0.60          # inside a scene already found: this much counts as "still going" without asking
+# Measured: on a film with many such scenes CLIP was this sure on >10 % of its seconds (a larger model agreed on
+# ~60 % of them); on a clean 1940 film on none at all. So this sure for CLIP_RUN seconds in a row starts a scene.
+CLIP_STRONG = 0.90
+CLIP_RUN = 3
+NUDE_PAIR_S = 3           # NudeNet alone needs two finds this close (a clean film had 2 single false alarms)
 
 
 NUDE_LABELS = {"FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED", "BUTTOCKS_EXPOSED",
@@ -307,19 +315,30 @@ class SceneScanner:
     def _scan_from(self, at):
         recent = collections.deque(maxlen=self.LOOKBACK)
         in_scene, clear_run, scene_start, last_pos = False, 0, 0.0, 0.0
+        strong_run, strong_start, last_nude = 0, 0.0, None
         last_save = time.time()
         for t, frame in self._frames(at):
             nn = self.det.nudenet(frame)
             c = self.det.clip(frame)
+            strong_run = strong_run + 1 if c >= CLIP_STRONG else 0
+            if strong_run == 1:
+                strong_start = t
+            nude_sure = nn == "nudity" and (c >= CLIP_FLAG or (last_nude is not None and t - last_nude <= NUDE_PAIR_S))
+            if nn == "nudity":
+                last_nude = t
             if in_scene:
                 # still going? a clear sign from the fast checks is enough; otherwise the vision model decides
                 pos = nn == "nudity" or c >= CLIP_SURE or self.det.ask(frame)
+            elif nude_sure or strong_run >= CLIP_RUN:
+                pos = True                             # the fast checks are sure enough on their own
             else:
                 ask = nn != "clear" or c >= CLIP_FLAG or int(t) % self.BACKSTOP == 0
-                pos = nn == "nudity" or (ask and self.det.ask(frame))
+                pos = ask and self.det.ask(frame)
             if not in_scene and pos:
-                first = t
+                first = strong_start if strong_run >= CLIP_RUN else t
                 for tb, fb in reversed(recent):        # where did it begin? (the seconds just before)
+                    if tb >= first:
+                        continue
                     if self._cover(fb):
                         first = tb
                     else:
