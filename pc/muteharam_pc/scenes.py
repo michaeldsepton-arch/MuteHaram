@@ -38,11 +38,64 @@ CLIP_OTHER = ["people talking to each other", "a man and a woman talking face to
               "a group of people", "text on a screen", "a dark scene", "people fighting", "people at a table eating",
               "a person hugging another person", "people in an office"]
 CLIP_FLAG = 0.30          # this much of CLIP's choice on the "cover" group: ask the vision model
+CLIP_SURE = 0.60          # inside a scene already found: this much counts as "still going" without asking
+
+
 NUDE_LABELS = {"FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED", "BUTTOCKS_EXPOSED",
                "ANUS_EXPOSED"}
 HINT_LABELS = {"FEMALE_BREAST_COVERED", "BUTTOCKS_COVERED", "FEMALE_GENITALIA_COVERED"}
 W, H = 448, 252                       # frame size the detectors see (letterboxed)
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
+
+def small_variant(url, headers, alts=(), duration=None, ffprobe=None, log=print):
+    """For checking, a small copy of the same film's picture (at least 600 wide): far less to download and decode
+    than full quality (the checks only look at 448 x 252), which leaves the processor to the vision model.
+    Lists of qualities among the other addresses the page loaded are used only when their length matches the
+    film's to the second (pages also load trailers and adverts)."""
+    import re
+    from urllib.parse import urljoin
+    if not str(url).startswith(("http://", "https://")):
+        return url
+    hdrs = {k: v for k, v in (headers or {}).items() if k.lower() != "cookie"}
+
+    def get(u):
+        with urllib.request.urlopen(urllib.request.Request(u, headers=hdrs), timeout=20) as r:
+            return r.read(1 << 20).decode("utf-8", "replace")
+
+    def options(u):
+        try:
+            text = get(u)
+        except Exception:
+            return []
+        lines = text.splitlines()
+        out = []
+        for i, line in enumerate(lines):
+            if line.startswith("#EXT-X-STREAM-INF"):
+                ref = next((x.strip() for x in lines[i + 1:] if x.strip() and not x.startswith("#")), None)
+                res = re.search(r"RESOLUTION=(\d+)x(\d+)", line)
+                bw = re.search(r"BANDWIDTH=(\d+)", line)
+                if ref:
+                    out.append((int(res.group(1)) if res else 0, int(bw.group(1)) if bw else 0, urljoin(u, ref)))
+        return out
+
+    same_folder = lambda u: u.split("?")[0].rsplit("/", 1)[0] == url.split("?")[0].rsplit("/", 1)[0]
+    cands = [url] + ([url.replace("/index.m3u8", "/master.m3u8")] if "/index.m3u8" in url else [])
+    cands += [u for u in (alts or []) if u not in cands]
+    for u in cands:
+        opts = options(u)
+        if len(opts) < 2:
+            continue
+        small = min([o for o in opts if o[0] >= 600] or opts, key=lambda o: (o[0] or 1e9, o[1]))[2]
+        if u != url and not same_folder(u):
+            if not (duration and ffprobe):
+                continue
+            from .library import probe_duration
+            d = probe_duration(ffprobe, small, headers)
+            if d is None or abs(d - duration) > 1.5:
+                continue                                  # a trailer, an advert, another film
+        return small
+    return url
 
 
 def ollama_exe():
@@ -98,7 +151,7 @@ class Detector:
         if self._clip is None:
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
             from transformers import CLIPModel, CLIPProcessor
-            torch.set_num_threads(4)
+            torch.set_num_threads(2)            # (the vision model needs the processor more)
             m = CLIPModel.from_pretrained(CLIP_MODEL, use_safetensors=True).eval()
             proc = CLIPProcessor.from_pretrained(CLIP_MODEL)
             with torch.no_grad():
@@ -146,7 +199,7 @@ class SceneScanner:
     PAD = 5           # extra seconds covered before and after
 
     def __init__(self, url, headers, ffmpeg, duration, out_path=None, start=0.0, covers=None, log=print,
-                 model=MODEL):
+                 model=MODEL, alts=()):
         self.url, self.headers, self.ffmpeg = url, dict(headers or {}), ffmpeg
         self.duration = float(duration or 0)
         self.out_path = out_path
@@ -162,6 +215,8 @@ class SceneScanner:
         self._stop = False
         self._lock = threading.Lock()
         self.thread = None
+        self.scan_url = None                   # the (small) picture actually read for checking
+        self.alts = list(alts or [])
 
     # ---- what the players read
     def state(self):
@@ -198,7 +253,13 @@ class SceneScanner:
                 cmd += ["-user_agent", ua]
             if h:
                 cmd += ["-headers", "".join(f"{k}: {v}" + chr(13) + chr(10) for k, v in h.items())]
-        cmd += ["-ss", f"{at:.2f}", "-i", self.url, "-an", "-sn",
+        if self.scan_url is None:
+            probe = os.path.join(os.path.dirname(self.ffmpeg), "ffprobe" + (".exe" if self.ffmpeg.lower().endswith(".exe") else ""))
+            self.scan_url = small_variant(self.url, self.headers, self.alts, self.duration,
+                                          probe if os.path.exists(probe) else "ffprobe", self.log)
+            if self.scan_url != self.url:
+                self.log("scenes: checking a smaller copy of the picture (same film, less to download)")
+        cmd += ["-threads", "2", "-ss", f"{at:.2f}", "-i", self.scan_url, "-an", "-sn",
                 "-vf", f"fps=1,scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2",
                 "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1"]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=NO_WINDOW)
@@ -249,9 +310,13 @@ class SceneScanner:
         last_save = time.time()
         for t, frame in self._frames(at):
             nn = self.det.nudenet(frame)
-            flagged = nn != "clear" or self.det.clip(frame) >= CLIP_FLAG
-            ask = in_scene or flagged or int(t) % self.BACKSTOP == 0
-            pos = nn == "nudity" or (ask and self.det.ask(frame))
+            c = self.det.clip(frame)
+            if in_scene:
+                # still going? a clear sign from the fast checks is enough; otherwise the vision model decides
+                pos = nn == "nudity" or c >= CLIP_SURE or self.det.ask(frame)
+            else:
+                ask = nn != "clear" or c >= CLIP_FLAG or int(t) % self.BACKSTOP == 0
+                pos = nn == "nudity" or (ask and self.det.ask(frame))
             if not in_scene and pos:
                 first = t
                 for tb, fb in reversed(recent):        # where did it begin? (the seconds just before)

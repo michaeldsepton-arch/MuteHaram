@@ -50,6 +50,20 @@ covers = merge(s.covers)
 print("covers:", covers, "| model checks:", len(s.det.asked))
 assert covers == [[95.0, 112.0], [295.0, 314.0], [395.0, 406.0]], covers   # (300 s found at 304, looked back)
 assert len(s.det.asked) < 130, "between scenes the model only looks every 8 s (and at what the fast checks flag)"
-assert all(t in s.det.asked for t in range(99, 113)), "around a find it looks every second"
+assert all(t in s.det.asked for t in range(108, 113)), "after a scene the model checks every second until 5 clear"
+assert not any(t in s.det.asked for t in range(101, 108)), "inside a scene a sure fast check is enough (no 3 s model answer)"
 assert merge([[1, 5], [5.5, 9], [20, 30]]) == [[1, 9], [20, 30]]
+
+# the real frame reader (one frame per second, in memory), on a synthetic test pattern video
+import subprocess  # noqa: E402
+import tempfile  # noqa: E402
+from muteharam_pc import config  # noqa: E402
+from muteharam_pc.scenes import W, H  # noqa: E402
+cfg = config.load()
+clip = os.path.join(tempfile.mkdtemp(prefix="mh_scenes_"), "pattern.mp4")
+subprocess.run([cfg["ffmpeg"], "-y", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=s=320x240:d=6:r=25", clip], check=True)
+real = SceneScanner(clip, {}, cfg["ffmpeg"], duration=6, log=lambda *a: None)
+got = [(t, f.shape) for t, f in real._frames(0.0)]
+assert len(got) in (6, 7) and got[0][1] == (H, W, 3), got[:2]
+os.remove(clip)
 print("SCENES TEST OK")

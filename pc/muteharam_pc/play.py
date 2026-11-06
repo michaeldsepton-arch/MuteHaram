@@ -364,7 +364,7 @@ def run_preclean(a, r, session, problem, log):
          url=a.url, picture=r["mpv_url"], mpv_args=r.get("mpv_args") or [], headers=r.get("headers") or {},
          subs=list(a.sub), done=False, error="", stage="cleaning", unclean_s=prog.get("unclean_s", 0) if same_job else 0)
     scan = start_scene_scan(r.get("mpv_url") or a.url, r.get("headers") or {}, session.duration,
-                            os.path.join(out_dir, "scenes.json"), cfg, log)
+                            os.path.join(out_dir, "scenes.json"), cfg, log, alts=list(a.alt or []))
 
     def remake(b):
         s = session.remake(session.mode, b)
@@ -444,7 +444,7 @@ def run_preclean(a, r, session, problem, log):
     log("pre-cleaning finished:", opus)
 
 
-def start_scene_scan(url, headers, duration, path, cfg, log, start=0.0):
+def start_scene_scan(url, headers, duration, path, cfg, log, start=0.0, alts=()):
     """Lowering the gaze: check the picture for scenes to cover (carries on from an earlier, stopped check).
     -> the running SceneScanner, or None (switched off, or already checked)."""
     if not S_SETTINGS().get("scenes", True):
@@ -456,7 +456,7 @@ def start_scene_scan(url, headers, duration, path, cfg, log, start=0.0):
     try:
         return scenes.SceneScanner(url, headers, cfg["ffmpeg"], duration, out_path=path,
                                    start=max(start, float(old.get("scanned_to") or 0)), covers=old.get("covers"),
-                                   log=log, model=S_SETTINGS().get("scenes_model", scenes.MODEL)).begin()
+                                   log=log, model=S_SETTINGS().get("scenes_model", scenes.MODEL), alts=alts).begin()
     except Exception as ex:
         log(f"scenes: could not start the picture check: {ex!r}")
         return None
@@ -819,7 +819,7 @@ def run(argv=None):
         import tempfile
         live_scenes = os.path.join(tempfile.gettempdir(), f"muteharam-scenes-{os.getpid()}.json")
         scan = start_scene_scan(r.get("mpv_url") or a.url, r.get("headers") or headers or {}, session.duration,
-                                live_scenes, cfg, log, start=max(0.0, a.start))
+                                live_scenes, cfg, log, start=max(0.0, a.start), alts=list(a.alt or []))
         if scan is None:
             live_scenes = None
         elif a.tablet:
