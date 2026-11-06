@@ -245,6 +245,7 @@ class TabletFront:
         self.files = {}                  # extra files the tablet may fetch (a library film's compressed sound)
         self.audio_path = "/audio.wav"   # where the tablet gets the cleaned sound
         self.resume_key = None           # which film, for remembering where it was left (see resume_key)
+        self.scenes = None               # -> {"covers": [[s, e]...], "scanned_to", "done"} (Lowering the gaze)
         self.duration = 0.0
         self._pos_saved = 0.0
 
@@ -284,7 +285,13 @@ class TabletFront:
         if self.hub is None:
             return {"preparing": True, "failed": self.failed, "status": self.text,
                     "elapsed_s": int(time.time() - self.t0)}
-        return dict(self.doc, mode=self.hub.mode, age_s=int(time.time() - self.doc["id"] / 1000))
+        doc = dict(self.doc, mode=self.hub.mode, age_s=int(time.time() - self.doc["id"] / 1000))
+        if self.scenes is not None:
+            try:
+                doc["scenes"] = self.scenes()
+            except Exception:
+                pass
+        return doc
 
 
 GOVERNOR = None
@@ -356,6 +363,9 @@ def run_preclean(a, r, session, problem, log):
     save(direct=bool(a.direct), total_frames=total, hop=hop, mode=session.mode, duration=session.duration, nblocks=nblocks,
          url=a.url, picture=r["mpv_url"], mpv_args=r.get("mpv_args") or [], headers=r.get("headers") or {},
          subs=list(a.sub), done=False, error="", stage="cleaning", unclean_s=prog.get("unclean_s", 0) if same_job else 0)
+    scan = start_scene_scan(r.get("mpv_url") or a.url, r.get("headers") or {}, session.duration,
+                            os.path.join(out_dir, "scenes.json"), cfg, log)
+
     def remake(b):
         s = session.remake(session.mode, b)
         s.lookahead_blocks = 1           # one block at a time, so the cleaning can give way between blocks
@@ -412,9 +422,15 @@ def run_preclean(a, r, session, problem, log):
             if len(recent) >= 3:                   # (the first block includes loading the model: not counted)
                 per_block = (recent[-1] - recent[0]) / (len(recent) - 1)
                 eta = int((nblocks - b - 1) * per_block)
-            save(progress=(b + 1) / nblocks, done_blocks=b + 1, eta_s=eta)
+            save(progress=(b + 1) / nblocks, done_blocks=b + 1, eta_s=eta,
+                 scenes_progress=scene_progress(scan, session.duration))
     sess.stop_work()
     sess.close()
+    # the picture check may still be going (it reads the film at its own pace): the film is ready once both are done
+    while scan is not None and scan.thread.is_alive():
+        save(stage=f"checking scenes {scene_progress(scan, session.duration) * 100:.0f} %",
+             scenes_progress=scene_progress(scan, session.duration))
+        scan.thread.join(5)
     save(stage="saving")
     opus = os.path.join(out_dir, "audio.opus")
     res = subprocess.run([cfg["ffmpeg"], "-y", "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", str(SAMPLE_RATE),
@@ -426,6 +442,48 @@ def run_preclean(a, r, session, problem, log):
     os.remove(pcm_path)
     save(done=True, stage="ready", progress=1.0, eta_s=0)
     log("pre-cleaning finished:", opus)
+
+
+def start_scene_scan(url, headers, duration, path, cfg, log, start=0.0):
+    """Lowering the gaze: check the picture for scenes to cover (carries on from an earlier, stopped check).
+    -> the running SceneScanner, or None (switched off, or already checked)."""
+    if not S_SETTINGS().get("scenes", True):
+        return None
+    from . import scenes
+    old = scenes.load(path) if path else {}
+    if old.get("done"):
+        return None
+    try:
+        return scenes.SceneScanner(url, headers, cfg["ffmpeg"], duration, out_path=path,
+                                   start=max(start, float(old.get("scanned_to") or 0)), covers=old.get("covers"),
+                                   log=log, model=S_SETTINGS().get("scenes_model", scenes.MODEL)).begin()
+    except Exception as ex:
+        log(f"scenes: could not start the picture check: {ex!r}")
+        return None
+
+
+def scene_args(path):
+    """mpv options for Lowering the gaze (mpv_scenes.lua covers the listed parts; G turns it on / off)."""
+    if not path or not S_SETTINGS().get("scenes", True):
+        return []
+    on = "yes" if S_SETTINGS().get("scenes_cover", True) else "no"
+    return [f"--script={os.path.join(HERE, 'mpv_scenes.lua')}",
+            f"--script-opts-append=muteharam-scenes={mpv_list_value(path)}",
+            f"--script-opts-append=muteharam-on={on}"]
+
+
+def scene_progress(scan, duration):
+    if scan is None or not duration:
+        return 1.0
+    st = scan.state()
+    return 1.0 if st["done"] else min(1.0, st["scanned_to"] / duration)
+
+
+def S_SETTINGS():
+    try:
+        return config.settings()
+    except Exception:
+        return dict(config.DEFAULT_SETTINGS)
 
 
 def adaptive_picture(url, headers, alts):
@@ -478,9 +536,13 @@ def run_library(a, S, log):
         # the finished sound file as it is (160 kb/s instead of 1.4 Mbit/s raw), for tablet apps that can play it
         front.files["/audio.opus"] = audio
         front.audio_path = "/audio.opus"
+        scenes_file = os.path.join(a.library, "scenes.json")
+        if os.path.exists(scenes_file):
+            from . import scenes
+            front.scenes = lambda: scenes.load(scenes_file)
         return run_tablet(a, cfg, r, notes, sess, None, r["headers"], log, front, srv)
     cmd = [cfg["mpv"], r["mpv_url"], f"--audio-file={audio}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}",
-           f"--script={os.path.join(HERE, 'mpv_pip.lua')}"]
+           f"--script={os.path.join(HERE, 'mpv_pip.lua')}"] + scene_args(os.path.join(a.library, "scenes.json"))
     if S["ontop"] and not a.pip:
         cmd += ["--ontop"]
     if a.pip:
@@ -560,6 +622,12 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
         if at and 30 < at < session.duration - 120:
             a.start = max(0.0, at - 5)
             log(f"[tablet] carrying on from {int(a.start // 60)}:{int(a.start % 60):02d}, where it was left last time")
+    # live: the picture check gets a head start (it then keeps ahead; the tablet waits if playback catches up)
+    if front.scenes is not None and not front.scenes().get("done"):
+        front.stage("Checking the first scenes")
+        t0 = time.time()
+        while time.time() - t0 < 90 and front.scenes().get("scanned_to", 0) < a.start + 20 and not front.scenes().get("error"):
+            time.sleep(1)
     # the film only starts on the tablet once its first seconds are cleaned: no original sound (music) at the start
     front.stage("Cleaning the first seconds of sound")
     if not session.prepare(at_frame=int(max(0.0, a.start) * SAMPLE_RATE), timeout=240):
@@ -746,6 +814,16 @@ def run(argv=None):
             r["mpv_url"] = pick
     if a.preclean:
         return run_preclean(a, r, session, problem, log)
+    live_scenes = None
+    if session is not None and session.duration:
+        import tempfile
+        live_scenes = os.path.join(tempfile.gettempdir(), f"muteharam-scenes-{os.getpid()}.json")
+        scan = start_scene_scan(r.get("mpv_url") or a.url, r.get("headers") or headers or {}, session.duration,
+                                live_scenes, cfg, log, start=max(0.0, a.start))
+        if scan is None:
+            live_scenes = None
+        elif a.tablet:
+            front.scenes = scan.state
     if a.tablet:
         return run_tablet(a, cfg, r, notes, session, problem, headers, log, front, tablet_srv)
     if session is not None:
@@ -776,6 +854,8 @@ def run(argv=None):
             # a YouTube link was resolved as video-only for our audio track: ask for sound again
             r["mpv_args"] = [x for x in r["mpv_args"] if not x.startswith("--ytdl-format")]
     cmd += [f"--script={os.path.join(HERE, 'mpv_pip.lua')}"]
+    if live_scenes:
+        cmd += scene_args(live_scenes)
     if S["ontop"] and not a.pip:
         cmd += ["--ontop"]                 # stays in front of other programs (press T in the player to turn it off)
     if a.pip:

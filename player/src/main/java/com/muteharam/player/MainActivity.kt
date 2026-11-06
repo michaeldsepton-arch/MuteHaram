@@ -74,6 +74,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var homeBar: ProgressBar
     private lateinit var homeCard: LinearLayout
     private lateinit var homeFooter: TextView
+
+    // Lowering the gaze: the parts of the film to cover (from the PC's scene check) and the on/off button
+    private lateinit var gazeCover: LinearLayout
+    private lateinit var gazeTitle: TextView
+    private lateinit var gazeLine: TextView
+    private lateinit var gazeButton: TextView
+    @Volatile
+    private var covers: DoubleArray = DoubleArray(0)       // start, end, start, end ... (seconds)
+    @Volatile
+    private var scannedTo = 0.0
+    @Volatile
+    private var scenesDone = true
+    @Volatile
+    private var hasScenes = false
+    private var covering = false
+    private var heldForCheck = false
     private var player: ExoPlayer? = null
     private lateinit var modeButton: TextView
     private lateinit var gearButton: TextView
@@ -227,6 +243,96 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun gazeOn() = prefs.getBoolean("gaze", true)
+
+    private fun showGazeButton() {
+        val on = gazeOn()
+        gazeButton.text = if (on) "◉  Lowering the gaze: ON" else "○  Lowering the gaze: OFF"
+        gazeButton.background = pill(if (on) 0xCC15524F.toInt() else 0xCC081A2B.toInt(), if (on) TEAL else TEAL_DIM)
+    }
+
+    private val gazeTimer = object : Runnable {
+        override fun run() {
+            checkGaze()
+            ui.postDelayed(this, 250)
+        }
+    }
+
+    /** Cover the picture and mute in the parts the PC's scene check found; while a live check is still behind
+     *  playback, wait for it ("Checking the next scenes"). G-button OFF: nothing is covered. */
+    private fun checkGaze() {
+        val p = player
+        if (p == null || !hasScenes || !gazeOn()) {
+            if (covering || heldForCheck) {
+                covering = false
+                gazeCover.visibility = View.GONE
+                p?.volume = 1f
+                if (heldForCheck) {
+                    heldForCheck = false
+                    p?.play()
+                }
+            }
+            return
+        }
+        val t = p.currentPosition / 1000.0
+        if (!scenesDone && t > scannedTo - 1) {
+            if (!heldForCheck && p.isPlaying) {
+                heldForCheck = true
+                p.pause()
+                gazeTitle.text = "Checking the next scenes …"
+                gazeLine.text = "It carries on by itself in a moment"
+                gazeCover.visibility = View.VISIBLE
+            }
+            return
+        }
+        if (heldForCheck && (scenesDone || scannedTo > t + 8)) {
+            heldForCheck = false
+            gazeCover.visibility = View.GONE
+            p.play()
+        }
+        val c = covers
+        var inside = false
+        var i = 0
+        while (i + 1 < c.size) {
+            if (t >= c[i] && t <= c[i + 1]) { inside = true; break }
+            i += 2
+        }
+        if (inside && !covering) {
+            covering = true
+            gazeTitle.text = "Lowering the gaze"
+            gazeLine.text = "A scene is covered · the sound comes back by itself"
+            gazeCover.visibility = View.VISIBLE
+            p.volume = 0f
+        } else if (!inside && covering) {
+            covering = false
+            gazeCover.visibility = View.GONE
+            p.volume = 1f
+        }
+    }
+
+    /** The PC's scene check, sent with every check-in. */
+    private fun readScenes(j: org.json.JSONObject) {
+        val sc = j.optJSONObject("scenes")
+        if (sc == null) {
+            hasScenes = false
+            return
+        }
+        val arr = sc.optJSONArray("covers")
+        val out = DoubleArray((arr?.length() ?: 0) * 2)
+        if (arr != null) for (k in 0 until arr.length()) {
+            val r = arr.optJSONArray(k) ?: continue
+            out[2 * k] = r.optDouble(0)
+            out[2 * k + 1] = r.optDouble(1)
+        }
+        covers = out
+        scannedTo = sc.optDouble("scanned_to", 0.0)
+        scenesDone = sc.optBoolean("done", false) || sc.optString("error").isNotEmpty()
+        if (!hasScenes) {
+            hasScenes = true
+            ui.post { refreshOverlay() }
+        }
+    }
+
     /** What the home screen card says: the first line as its title, the rest as the explanation. */
     private fun showOnHome(text: String, tappable: Boolean) {
         val lines = text.trim().split("\n", limit = 2)
@@ -262,6 +368,35 @@ class MainActivity : AppCompatActivity() {
         // the home screen (nothing playing yet): logo, name and a card saying what is happening
         home = buildHome()
         root.addView(home, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        gazeCover = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            background = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(NAVY_DEEP, NAVY, TEAL_DEEP))
+            visibility = View.GONE
+            isClickable = false
+            addView(ImageView(context).apply { setImageResource(R.drawable.mh_logo) }, LinearLayout.LayoutParams(dp(84), dp(84)))
+            addView(TextView(context).apply {
+                text = "غضّ البصر"
+                setTextColor(TEAL)
+                textSize = 26f
+                gravity = Gravity.CENTER
+            }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(18) })
+            gazeTitle = TextView(context).apply {
+                setTextColor(CREAM)
+                textSize = 32f
+                typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+                gravity = Gravity.CENTER
+            }
+            addView(gazeTitle, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(4) })
+            gazeLine = TextView(context).apply {
+                setTextColor(MUTED)
+                textSize = 15f
+                gravity = Gravity.CENTER
+            }
+            addView(gazeLine, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
+        }
+        root.addView(gazeCover, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
 
         // messages while a film plays: a rounded panel at the top, out of the way of the play/pause button
         status = TextView(this).apply {
@@ -311,6 +446,26 @@ class MainActivity : AppCompatActivity() {
                 Gravity.TOP or Gravity.START
             ).apply { setMargins(dp(16), dp(16), dp(16), dp(16)) }
         )
+        gazeButton = TextView(this).apply {
+            setTextColor(CREAM)
+            textSize = 14f
+            setPadding(dp(16), dp(9), dp(16), dp(9))
+            visibility = View.GONE
+            setOnClickListener {
+                prefs.edit().putBoolean("gaze", !gazeOn()).apply()
+                showGazeButton()
+                checkGaze()
+            }
+        }
+        root.addView(
+            gazeButton,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            ).apply { setMargins(dp(16), dp(68), dp(16), dp(16)) }
+        )
+        showGazeButton()
+        ui.post(gazeTimer)
         setContentView(root)
         // Settings and the sound-mode button appear together with the player's controls (tap the picture) and fade with them.
         playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
@@ -480,6 +635,7 @@ class MainActivity : AppCompatActivity() {
                         continue
                     }
                     val s = SessionInfo.parse(text)
+                    readScenes(j)
                     if (s.id == stoppedId) {
                         // this film failed to play: leave the error message up until it is tapped or a new film is sent
                     } else if (s.id == resumeId && resumeMs > 0 && s.id != currentId) {
@@ -557,6 +713,7 @@ class MainActivity : AppCompatActivity() {
         val show = controlsVisible || player == null
         gearButton.visibility = if (show) View.VISIBLE else View.GONE
         modeButton.visibility = if (show && current != null) View.VISIBLE else View.GONE
+        gazeButton.visibility = if (show && current != null && hasScenes) View.VISIBLE else View.GONE
     }
 
     private fun noteLoad(info: LoadEventInfo, error: IOException?) {

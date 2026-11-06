@@ -44,6 +44,9 @@ DEFAULT_SETTINGS = {
     "sub_langs": "en.*,ar.*", # YouTube caption languages to load (yt-dlp style, "all" for everything)
     "pip": False,             # always start in the small corner window
     "ontop": True,            # the player window stays above other windows (also when you click another program); T toggles
+    "scenes": True,           # Lowering the gaze: check the picture for scenes to cover (see scenes.py)
+    "scenes_cover": True,     # cover those scenes while playing (G in the player, the button on the tablet)
+    "scenes_model": "gemma4:e4b",  # the Ollama vision model that checks the frames
 }
 
 
