@@ -162,6 +162,11 @@ class Library:
         """Everything, in queue order, with what the cleaning program reported."""
         with self.lock:
             res = []
+            try:                                     # where each film was left on the tablet (see play.py)
+                with open(os.path.join(config.PC_DIR, "positions.json"), encoding="utf-8") as f:
+                    positions = json.load(f)
+            except Exception:
+                positions = {}
             for i in self.ids():
                 m = self.meta(i)
                 if not m:
@@ -175,7 +180,7 @@ class Library:
                                 eta_s=p.get("eta_s"), duration=p.get("duration") or m.get("duration"),
                                 error=m.get("error") or p.get("error") or "", stage=p.get("stage", ""),
                                 unclean_s=p.get("unclean_s", 0), mode=p.get("mode", ""),
-                                watched_at=m.get("watched_at"),
+                                watched_at=m.get("watched_at"), resume_s=positions.get("library:" + i),
                                 player=(m.get("req") or {}).get("player", ""),
                                 size_mb=round(os.path.getsize(os.path.join(self.item_dir(i), "audio.opus")) / 1e6, 1)
                                 if ready else None))

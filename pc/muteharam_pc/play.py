@@ -244,6 +244,9 @@ class TabletFront:
         self.doc = None
         self.files = {}                  # extra files the tablet may fetch (a library film's compressed sound)
         self.audio_path = "/audio.wav"   # where the tablet gets the cleaned sound
+        self.resume_key = None           # which film, for remembering where it was left (see resume_key)
+        self.duration = 0.0
+        self._pos_saved = 0.0
 
     # ---- what the audio server reads (nothing until the session is ready)
     @property
@@ -266,6 +269,11 @@ class TabletFront:
         self.hub, self.doc = hub, doc
 
     def session_json(self, q):
+        # where the tablet is in the film (saved now and then: the next "Send to the tablet" carries on there)
+        pos = (q.get("pos") or [""])[0]
+        if pos.isdigit() and self.resume_key and time.time() - self._pos_saved > 10:
+            self._pos_saved = time.time()
+            save_position(self.resume_key, int(pos) / 1000.0, self.duration)
         # the tablet reports its loading problems (stalls, slow or failing downloads of the picture / the PC's sound)
         # (written when a stall or a failure is new, else once a minute)
         diag = (q.get("diag") or [""])[0]
@@ -280,6 +288,37 @@ class TabletFront:
 
 
 GOVERNOR = None
+
+POSITIONS = os.path.join(config.PC_DIR, "positions.json")
+
+
+def resume_key(a, duration):
+    """Which film this is, to remember where it was left: a library film by its library entry, anything else by
+    its page and length (one page address can show several episodes, which differ in length)."""
+    if getattr(a, "library", None):
+        return "library:" + os.path.basename(os.path.normpath(a.library))
+    return f"{a.page or a.url}|{round(duration or 0)}"
+
+
+def load_positions():
+    try:
+        return json.load(open(POSITIONS, encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def save_position(key, seconds, duration):
+    """Remember where a film was left; forget it once the film is (nearly) finished."""
+    from .library import write_json
+    pos = load_positions()
+    if duration and seconds > duration - 120:
+        pos.pop(key, None)
+    elif seconds > 30:
+        pos[key] = round(seconds, 1)
+    try:
+        write_json(POSITIONS, pos)
+    except Exception:
+        pass
 
 
 def run_preclean(a, r, session, problem, log):
@@ -502,15 +541,25 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
         u = sub["url"]
         if "thumbnail" in u.lower() or "sprite" in u.lower():
             continue
-        st, ct, data, _ = fetch_head(u, vheaders, nbytes=64)
+        st, ct, data, _ = fetch_head(u, vheaders, nbytes=512)
         text = data.lstrip(bytes([0xEF, 0xBB, 0xBF, 32, 13, 10]))
-        is_caption = text[:6] == b"WEBVTT" or u.lower().split("?")[0].endswith((".srt", ".ass", ".ssa", ".ttml"))
+        # (subtitle services send SRT as plain text from addresses without .srt: known by its "-->" timings)
+        is_caption = (text[:6] == b"WEBVTT" or b"-->" in text
+                      or u.lower().split("?")[0].endswith((".srt", ".ass", ".ssa", ".ttml")))
         if st is not None and st < 400 and is_caption:
             good.append(sub)
         else:
             log(f"skipping a caption file that does not load ({st}): {u[:100]}")
     subs = good
     hub = SessionHub(session, session.remake)
+    # carry on where this film was left last time (the tablet reports where it is while it plays)
+    front.resume_key = resume_key(a, session.duration)
+    front.duration = session.duration
+    if a.start <= 0:
+        at = load_positions().get(front.resume_key)
+        if at and 30 < at < session.duration - 120:
+            a.start = max(0.0, at - 5)
+            log(f"[tablet] carrying on from {int(a.start // 60)}:{int(a.start % 60):02d}, where it was left last time")
     # the film only starts on the tablet once its first seconds are cleaned: no original sound (music) at the start
     front.stage("Cleaning the first seconds of sound")
     if not session.prepare(at_frame=int(max(0.0, a.start) * SAMPLE_RATE), timeout=240):

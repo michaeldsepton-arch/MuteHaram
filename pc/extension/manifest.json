@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "MuteHaram",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Open the video on this page in the MuteHaram player with the music removed.",
   "permissions": [
     "webRequest",
@@ -22,7 +22,12 @@
     ]
   },
   "action": {
-    "default_title": "Remove music (open in MuteHaram player)"
+    "default_title": "Remove music (open in MuteHaram player)",
+    "default_icon": {
+      "16": "icon16.png",
+      "32": "icon32.png",
+      "48": "icon48.png"
+    }
   },
   "browser_specific_settings": {
     "gecko": {
@@ -40,5 +45,11 @@
       ],
       "run_at": "document_start"
     }
-  ]
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "32": "icon32.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  }
 }

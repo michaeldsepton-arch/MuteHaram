@@ -6,10 +6,10 @@
 
     <application
         android:allowBackup="false"
-        android:icon="@android:drawable/ic_media_play"
-        android:label="MuteHaram Player"
+        android:icon="@mipmap/ic_launcher"
+        android:label="MuteHaram"
         android:usesCleartextTraffic="true"
-        android:theme="@style/Theme.AppCompat.NoActionBar">
+        android:theme="@style/Theme.MuteHaram">
 
         <activity
             android:name=".MainActivity"

@@ -180,6 +180,9 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _library_get(self):
+        if self.path in ("/logo.png", "/favicon.ico"):
+            with open(os.path.join(config.PC_DIR, "assets", "logo.png"), "rb") as f:
+                return self._send(200, f.read(), "image/png")
         if self.path in ("/library", "/library/"):
             with open(os.path.join(HERE, "library_app.html"), "rb") as f:
                 return self._send(200, f.read(), "text/html; charset=utf-8")
@@ -290,7 +293,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path in ("/library", "/library/", "/api/library"):
+        if self.path in ("/library", "/library/", "/api/library", "/logo.png", "/favicon.ico"):
             return self._library_get()
         if not self._origin_ok():
             return self._json(403, {"error": "not from an extension"})

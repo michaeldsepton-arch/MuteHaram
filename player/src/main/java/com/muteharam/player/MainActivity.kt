@@ -2,6 +2,11 @@ package com.muteharam.player
 
 import android.app.AlertDialog
 import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.content.res.ColorStateList
+import android.widget.ImageView
+import android.widget.ProgressBar
 import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
@@ -48,10 +53,27 @@ import java.net.URLEncoder
  * straight from the website; the sound is the music-free audio the PC serves over Wi-Fi. Pause,
  * seek and captions work here on the tablet.
  */
+// the logo's colours
+private const val NAVY_DEEP = 0xFF040E19.toInt()
+private const val NAVY = 0xFF0A1F33.toInt()
+private const val TEAL_DEEP = 0xFF15524F.toInt()
+private const val TEAL = 0xFF4FA89A.toInt()
+private const val TEAL_DIM = 0x664FA89A
+private const val CREAM = 0xFFF2ECE2.toInt()
+private const val MUTED = 0xFFA9B8C2.toInt()
+private const val WARN = 0xFFE0A458.toInt()
+
 @UnstableApi
 class MainActivity : AppCompatActivity() {
     private lateinit var playerView: PlayerView
     private lateinit var status: TextView
+    private lateinit var home: FrameLayout
+    private lateinit var homeTitle: TextView
+    private lateinit var homeDetail: TextView
+    private lateinit var homeDot: View
+    private lateinit var homeBar: ProgressBar
+    private lateinit var homeCard: LinearLayout
+    private lateinit var homeFooter: TextView
     private var player: ExoPlayer? = null
     private lateinit var modeButton: TextView
     private lateinit var gearButton: TextView
@@ -111,6 +133,116 @@ class MainActivity : AppCompatActivity() {
         }
     }
     private val ui = Handler(Looper.getMainLooper())
+
+    // ------------------------------------------------------------------ look (the logo's colours)
+
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun pill(fill: Int, stroke: Int, radiusDp: Int = 22) = GradientDrawable().apply {
+        setColor(fill)
+        cornerRadius = dp(radiusDp).toFloat()
+        setStroke(dp(1), stroke)
+    }
+
+    /** The screen while nothing plays: logo, name, and a card saying what is happening (the loading screen). */
+    private fun buildHome(): FrameLayout {
+        val bg = GradientDrawable(GradientDrawable.Orientation.TL_BR, intArrayOf(NAVY_DEEP, NAVY, TEAL_DEEP))
+        val col = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        val logo = ImageView(this).apply {
+            setImageResource(R.drawable.mh_logo)
+            alpha = 0f
+            scaleX = 0.85f
+            scaleY = 0.85f
+            animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(700).start()
+        }
+        col.addView(logo, LinearLayout.LayoutParams(dp(132), dp(132)))
+        col.addView(TextView(this).apply {
+            text = "MuteHaram"
+            setTextColor(CREAM)
+            textSize = 30f
+            typeface = Typeface.create(Typeface.SERIF, Typeface.BOLD)
+            letterSpacing = 0.04f
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(14) })
+        col.addView(TextView(this).apply {
+            text = "Films and shows, without the music"
+            setTextColor(TEAL)
+            textSize = 15f
+            gravity = Gravity.CENTER
+        }, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(4) })
+
+        homeCard = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = pill(0xB3081A2B.toInt(), TEAL_DIM, 18)
+            setPadding(dp(22), dp(18), dp(22), dp(18))
+        }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        homeDot = View(this).apply {
+            background = GradientDrawable().apply { shape = GradientDrawable.OVAL; setColor(TEAL) }
+        }
+        row.addView(homeDot, LinearLayout.LayoutParams(dp(10), dp(10)).apply { rightMargin = dp(12) })
+        homeTitle = TextView(this).apply {
+            setTextColor(CREAM)
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            text = "Connecting to your PC …"
+        }
+        row.addView(homeTitle)
+        homeCard.addView(row)
+        homeDetail = TextView(this).apply {
+            setTextColor(MUTED)
+            textSize = 14f
+            setLineSpacing(0f, 1.15f)
+            visibility = View.GONE
+        }
+        homeCard.addView(homeDetail, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+        homeBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            indeterminateTintList = ColorStateList.valueOf(TEAL)
+        }
+        homeCard.addView(homeBar, LinearLayout.LayoutParams(-1, dp(6)).apply { topMargin = dp(14) })
+        col.addView(homeCard, LinearLayout.LayoutParams(dp(520), -2).apply { topMargin = dp(30) })
+        // the dot breathes while the screen is up
+        homeDot.animate().alpha(0.35f).setDuration(900).withEndAction(object : Runnable {
+            override fun run() {
+                homeDot.animate().alpha(if (homeDot.alpha < 0.5f) 1f else 0.35f).setDuration(900).withEndAction(this).start()
+            }
+        }).start()
+
+        homeFooter = TextView(this).apply {
+            setTextColor(MUTED)
+            textSize = 13f
+            gravity = Gravity.CENTER
+        }
+        return FrameLayout(this).apply {
+            background = bg
+            addView(col, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
+            addView(homeFooter, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = dp(18) })
+        }
+    }
+
+    /** What the home screen card says: the first line as its title, the rest as the explanation. */
+    private fun showOnHome(text: String, tappable: Boolean) {
+        val lines = text.trim().split("\n", limit = 2)
+        homeTitle.text = lines[0]
+        homeDetail.text = if (lines.size > 1) lines[1] else ""
+        homeDetail.visibility = if (lines.size > 1) View.VISIBLE else View.GONE
+        val problem = Regex("(problem|could not|failed|stopped|error)", RegexOption.IGNORE_CASE).containsMatchIn(lines[0])
+        val busy = !problem && !tappable &&
+            Regex("(connecting|preparing|loading|starting|trying|cleaning|waiting|opening)", RegexOption.IGNORE_CASE)
+                .containsMatchIn(text)
+        homeBar.visibility = if (busy) View.VISIBLE else View.GONE
+        (homeDot.background as GradientDrawable).setColor(if (problem) WARN else TEAL)
+        homeCard.background = pill(0xB3081A2B.toInt(), if (tappable) TEAL else TEAL_DIM, 18)
+        val addr = prefs.getString("addr", "") ?: ""
+        homeFooter.text = if (addr.isBlank()) "Not connected yet: tap Settings" else "PC  $addr"
+    }
     private val prefs by lazy { getSharedPreferences("mh", MODE_PRIVATE) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -127,28 +259,35 @@ class MainActivity : AppCompatActivity() {
             ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
 
+        // the home screen (nothing playing yet): logo, name and a card saying what is happening
+        home = buildHome()
+        root.addView(home, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+
+        // messages while a film plays: a rounded panel at the top, out of the way of the play/pause button
         status = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setBackgroundColor(0xAA000000.toInt())
-            textSize = 16f
-            setPadding(32, 20, 32, 20)
+            setTextColor(CREAM)
+            background = pill(0xE6081A2B.toInt(), TEAL_DIM)
+            textSize = 15f
+            setPadding(dp(20), dp(12), dp(20), dp(12))
             gravity = Gravity.CENTER
+            visibility = View.GONE
             isClickable = false             // a plain message never catches a tap meant for the player (pause ...)
             isFocusable = false
         }
         root.addView(
             status,
             FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER
-            )
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.CENTER_HORIZONTAL
+            ).apply { topMargin = dp(20) }
         )
 
         val gear = TextView(this).also { gearButton = it }.apply {
-            text = "⚙ Settings"
-            setTextColor(Color.WHITE)
-            setBackgroundColor(0x66000000)
-            textSize = 15f
-            setPadding(28, 16, 28, 16)
+            text = "⚙  Settings"
+            setTextColor(CREAM)
+            background = pill(0xCC081A2B.toInt(), TEAL_DIM)
+            textSize = 14f
+            setPadding(dp(16), dp(9), dp(16), dp(9))
             setOnClickListener { showSettings() }
         }
         root.addView(
@@ -156,13 +295,13 @@ class MainActivity : AppCompatActivity() {
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP or Gravity.END
-            )
+            ).apply { setMargins(dp(16), dp(16), dp(16), dp(16)) }
         )
         modeButton = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            setBackgroundColor(0x66000000)
-            textSize = 15f
-            setPadding(28, 16, 28, 16)
+            setTextColor(CREAM)
+            background = pill(0xCC081A2B.toInt(), TEAL_DIM)
+            textSize = 14f
+            setPadding(dp(16), dp(9), dp(16), dp(9))
             visibility = View.GONE
         }
         root.addView(
@@ -170,7 +309,7 @@ class MainActivity : AppCompatActivity() {
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP or Gravity.START
-            )
+            ).apply { setMargins(dp(16), dp(16), dp(16), dp(16)) }
         )
         setContentView(root)
         // Settings and the sound-mode button appear together with the player's controls (tap the picture) and fade with them.
@@ -192,7 +331,7 @@ class MainActivity : AppCompatActivity() {
         // if the app ever crashes, say why the next time it opens (so it can be reported and fixed)
         prefs.getString("lastCrash", null)?.let {
             prefs.edit().remove("lastCrash").apply()
-            AlertDialog.Builder(this).setTitle("The player stopped unexpectedly last time")
+            AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert).setTitle("The player stopped unexpectedly last time")
                 .setMessage("Please send this to whoever set up MuteHaram:\n\n" + it.take(1500))
                 .setPositiveButton("OK", null).show()
         }
@@ -249,9 +388,10 @@ class MainActivity : AppCompatActivity() {
         }
         box.addView(addr)
         box.addView(tok)
-        AlertDialog.Builder(this)
-            .setTitle("MuteHaram Player")
-            .setMessage("Type what the PC's helper window prints (address and token).")
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Connect to your PC")
+            .setIcon(R.drawable.mh_logo)
+            .setMessage("Type the PC address and token shown at the bottom of the MuteHaram library window on the PC.")
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
                 prefs.edit()
@@ -275,15 +415,13 @@ class MainActivity : AppCompatActivity() {
                 status.setOnClickListener(null)
                 status.isClickable = false
             } else {
+                // nothing playing: the home screen's card says it; while a film plays: the panel at the top
+                showOnHome(text, tappable)
                 status.text = text
-                status.visibility = View.VISIBLE
-                (status.layoutParams as FrameLayout.LayoutParams).let {
-                    it.gravity = if (player != null) (Gravity.TOP or Gravity.CENTER_HORIZONTAL) else Gravity.CENTER
-                    it.topMargin = if (player != null) 24 else 0
-                    status.layoutParams = it
-                }
+                status.visibility = if (player != null) View.VISIBLE else View.GONE
+                val target = if (player != null) status else homeCard
                 if (tappable) {
-                    status.setOnClickListener {
+                    target.setOnClickListener {
                         pendingOld?.let { o -> acceptedOldId = o.id; pendingOld = null }
                         stoppedId = -1L
                         autoRetries = 0
@@ -293,6 +431,8 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     status.setOnClickListener(null)
                     status.isClickable = false
+                    homeCard.setOnClickListener(null)
+                    homeCard.isClickable = false
                 }
             }
         }
@@ -322,7 +462,8 @@ class MainActivity : AppCompatActivity() {
             } else {
                 try {
                     val url = "http://" + host + ":47804/session.json?t=" + URLEncoder.encode(tok, "UTF-8") +
-                        (if (diag.isEmpty()) "" else "&diag=" + URLEncoder.encode(diag, "UTF-8"))
+                        (if (diag.isEmpty()) "" else "&diag=" + URLEncoder.encode(diag, "UTF-8")) +
+                        (if (resumeId == currentId && resumeMs > 0) "&pos=" + resumeMs else "")
                     val text = httpGet(url)
                     pollFailures = 0
                     val j = org.json.JSONObject(text)
@@ -412,6 +553,7 @@ class MainActivity : AppCompatActivity() {
 
     /** The two buttons are visible with the controls, or whenever nothing is playing yet. */
     private fun refreshOverlay() {
+        home.visibility = if (player == null) View.VISIBLE else View.GONE
         val show = controlsVisible || player == null
         gearButton.visibility = if (show) View.VISIBLE else View.GONE
         modeButton.visibility = if (show && current != null) View.VISIBLE else View.GONE
@@ -578,6 +720,7 @@ class MainActivity : AppCompatActivity() {
         p.playWhenReady = true
         playerView.player = p
         player = p
+        refreshOverlay()
         controlsVisible = false
         refreshOverlay()
     }

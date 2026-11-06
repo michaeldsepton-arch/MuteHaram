@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- MuteHaram colours (from the logo): deep navy, teal-green, cream -->
+    <color name="mh_navy">#FF06131F</color>
+    <color name="mh_teal">#FF4FA89A</color>
+    <style name="Theme.MuteHaram" parent="Theme.AppCompat.NoActionBar">
+        <!-- no white flash while the app opens: the window starts with the logo on navy -->
+        <item name="android:windowBackground">@drawable/splash</item>
+        <item name="android:statusBarColor">@color/mh_navy</item>
+        <item name="android:navigationBarColor">@color/mh_navy</item>
+        <item name="colorAccent">@color/mh_teal</item>
+        <item name="colorPrimary">@color/mh_navy</item>
+    </style>
+</resources>

@@ -3,60 +3,74 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MuteHaram Library</title>
+<title>MuteHaram</title>
+<link rel="icon" href="/logo.png">
 <style>
   :root {
-    --bg: #111418; --panel: #1a1f25; --line: #2a313a; --text: #e8ecf1; --dim: #9aa5b1;
-    --accent: #3fb27f; --accent-ink: #06210f; --warn: #e0a43a; --bad: #e5675e; --blue: #5aa0e6;
+    --navy-deep: #040e19; --navy: #0a1f33; --teal-deep: #15524f;
+    --panel: rgba(8, 26, 43, .72); --panel-solid: #0c2134; --line: rgba(79, 168, 154, .28);
+    --text: #f2ece2; --dim: #a9b8c2; --accent: #4fa89a; --accent-ink: #04211d;
+    --warn: #e0a458; --bad: #e5776e; --blue: #4fa89a;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.45 "Segoe UI", system-ui, sans-serif; }
-  header { display: flex; align-items: center; gap: 16px; padding: 18px 24px; border-bottom: 1px solid var(--line);
-           position: sticky; top: 0; background: var(--bg); z-index: 2; flex-wrap: wrap; }
-  h1 { font-size: 20px; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  html { min-height: 100%; background: var(--navy-deep); }
+  body { margin: 0; min-height: 100vh; color: var(--text); font: 15px/1.45 "Segoe UI", system-ui, sans-serif;
+         background: linear-gradient(135deg, var(--navy-deep) 0%, var(--navy) 55%, var(--teal-deep) 120%) fixed; }
+  header { display: flex; align-items: center; gap: 16px; padding: 16px 28px; border-bottom: 1px solid var(--line);
+           position: sticky; top: 0; z-index: 2; flex-wrap: wrap;
+           background: rgba(4, 14, 25, .82); backdrop-filter: blur(10px); }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand img { width: 42px; height: 42px; border-radius: 10px; box-shadow: 0 4px 14px rgba(0, 0, 0, .45); }
+  h1 { font: 700 22px/1.1 Georgia, "Times New Roman", serif; margin: 0; letter-spacing: .4px; }
+  h1 small { display: block; font: 400 12px "Segoe UI", sans-serif; color: var(--accent); letter-spacing: .3px; margin-top: 3px; }
   #state { color: var(--dim); flex: 1; min-width: 220px; }
   #state b { color: var(--text); font-weight: 600; }
-  button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--text);
-           border-radius: 8px; padding: 7px 14px; cursor: pointer; }
-  button:hover { border-color: #46515e; }
+  button { font: inherit; border: 1px solid var(--line); background: rgba(12, 33, 52, .9); color: var(--text);
+           border-radius: 999px; padding: 7px 16px; cursor: pointer; transition: border-color .15s, background .15s; }
+  button:hover { border-color: var(--accent); }
   button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button.primary:hover { background: #63bdae; }
   button.stop { background: #3a2422; border-color: #6b3934; color: #ffd9d5; font-weight: 600; }
-  button.small { padding: 4px 9px; font-size: 13px; }
+  button.small { padding: 4px 11px; font-size: 13px; }
   button:disabled { opacity: .4; cursor: default; }
-  main { padding: 8px 24px 40px; max-width: 1100px; }
-  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: 1px; color: var(--dim); font-weight: 600; margin: 26px 0 10px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
-  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
-  .title { font-weight: 600; word-break: break-word; }
+  main { padding: 8px 28px 40px; max-width: 1180px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1.6px; color: var(--accent); font-weight: 700; margin: 28px 0 12px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 16px 18px;
+          box-shadow: 0 6px 22px rgba(0, 0, 0, .28); }
+  .title { font-weight: 600; font-size: 16px; word-break: break-word; }
   .pen { background: none; border: none; padding: 0 4px; color: var(--dim); font-size: 15px; cursor: pointer; }
-  .added { color: var(--dim); font-weight: 400; font-size: 13px; }
+  .added { color: var(--dim); font-weight: 400; font-size: 12px; }
   .pen:hover { color: var(--accent); }
-  .meta { color: var(--dim); font-size: 13px; margin: 3px 0 10px; }
+  .meta { color: var(--dim); font-size: 13px; margin: 4px 0 12px; }
+  .resume { color: var(--accent); font-size: 13px; margin: -6px 0 10px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  #queue { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
   table { width: 100%; border-collapse: collapse; }
-  td { padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
-  td.n { color: var(--dim); width: 28px; text-align: right; }
+  td { padding: 12px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  tr:last-child td { border-bottom: 0; }
+  td.n { color: var(--dim); width: 34px; text-align: right; }
   td.act { white-space: nowrap; text-align: right; width: 1%; }
-  .bar { height: 6px; background: #252c34; border-radius: 3px; overflow: hidden; margin-top: 6px; max-width: 420px; }
-  .bar > i { display: block; height: 100%; background: var(--blue); width: 0; transition: width .6s; }
+  .bar { height: 6px; background: rgba(255, 255, 255, .08); border-radius: 3px; overflow: hidden; margin-top: 7px; max-width: 440px; }
+  .bar > i { display: block; height: 100%; background: linear-gradient(90deg, #2f7f78, var(--accent)); width: 0; transition: width .6s; }
   .st { font-size: 13px; color: var(--dim); }
-  .st.processing { color: var(--blue); } .st.error { color: var(--bad); } .st.paused { color: var(--warn); }
-  .empty { color: var(--dim); background: var(--panel); border: 1px dashed var(--line); border-radius: 12px; padding: 16px; }
+  .st.processing { color: var(--accent); } .st.error { color: var(--bad); } .st.paused { color: var(--warn); }
+  .empty { color: var(--dim); background: var(--panel); border: 1px dashed var(--line); border-radius: 16px; padding: 18px; }
+  #queue .empty { border: 0; border-radius: 0; }
   .help { color: var(--dim); font-size: 13px; }
-  #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #26303a; color: var(--text);
-           padding: 10px 16px; border-radius: 8px; border: 1px solid var(--line); opacity: 0; transition: opacity .3s; pointer-events: none; }
+  #toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--panel-solid); color: var(--text);
+           padding: 11px 18px; border-radius: 12px; border: 1px solid var(--accent); opacity: 0; transition: opacity .3s;
+           pointer-events: none; max-width: 80vw; box-shadow: 0 8px 26px rgba(0, 0, 0, .4); }
   #toast.show { opacity: 1; }
-  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
-  .seg button { border: 0; border-radius: 0; background: var(--panel); color: var(--dim); padding: 7px 12px; }
-  .seg button.on { background: #24384d; color: #fff; font-weight: 600; }
-  .pct { font-size: 22px; font-weight: 700; color: var(--blue); font-variant-numeric: tabular-nums; width: 74px; text-align: right; }
+  .pct { font-size: 22px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; width: 74px; text-align: right; }
   .pct.paused, .pct.held { color: var(--warn); }
   .st.held { color: var(--warn); }
   .sectionhead { display: flex; align-items: center; gap: 14px; }
   .sectionhead h2 { flex: 1; }
   #space { color: var(--dim); font-size: 13px; }
-  #offline { display: none; background: #3a2422; color: #ffd9d5; padding: 10px 24px; }
-  .banner { background: #3a3122; color: #ffe9c2; padding: 10px 24px; }
+  #offline { display: none; background: #3a2422; color: #ffd9d5; padding: 10px 28px; }
+  .banner { background: #3a3122; color: #ffe9c2; padding: 10px 28px; }
+  footer { border-top: 1px solid var(--line); margin-top: 10px; padding: 16px 28px 26px !important; }
 </style>
 </head>
 <body>
@@ -64,7 +78,7 @@
 <div id="oldExt" class="banner" style="display:none">The MuteHaram extension in Chrome is out of date, so expired website links can't be renewed and episodes added again aren't recognised.
 Open <b>chrome://extensions</b>, press the reload arrow on MuteHaram, then close and reopen this window.</div>
 <header>
-  <h1>MuteHaram Library</h1>
+  <div class="brand"><img src="/logo.png" alt=""><h1>MuteHaram<small>Library</small></h1></div>
   <div id="state">Loading ...</div>
   <div id="space"></div>
   <button id="tabletStop" class="stop" style="display:none" title="The tablet stops playing and says so">Stop sending to tablet</button>
@@ -143,6 +157,11 @@ function toast(t) {
   // problems stay up long enough to read (about 1 s per 15 characters)
   clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove("show"), Math.max(3500, t.length * 70));
 }
+function clock(s) {
+  s = Math.floor(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, sec = s % 60;
+  return (h ? h + ":" + String(m).padStart(2, "0") : m) + ":" + String(sec).padStart(2, "0");
+}
 function fmt(s) {
   if (s == null || !isFinite(s)) return "";
   s = Math.round(s);
@@ -219,6 +238,7 @@ function render() {
       titleEl(x),
       el("div", { class: "meta" }, [fmt(x.duration), x.size_mb ? `${x.size_mb} MB` : "",
                                     "watched " + new Date(x.watched_at * 1000).toLocaleDateString()].filter(Boolean).join(" · ")),
+      x.resume_s ? el("div", { class: "resume" }, "▶ Carries on from " + clock(x.resume_s)) : "",
       el("div", { class: "row" },
         btn("Delete cleaned sound", async () => { if (confirm(`Delete the cleaned sound of "${x.title}" (${x.size_mb} MB)?`)) await api("/api/remove", { id: x.id }); }, "stop"),
         btn("▶ Watch again", () => play(x, false)),
@@ -234,6 +254,7 @@ function render() {
       titleEl(x),
       el("div", { class: "meta" }, [fmt(x.duration), x.size_mb ? `${x.size_mb} MB` : "",
                                     x.unclean_s ? `${fmt(x.unclean_s)} could not be cleaned (silent)` : ""].filter(Boolean).join(" · ")),
+      x.resume_s ? el("div", { class: "resume" }, "▶ Carries on from " + clock(x.resume_s)) : "",
       el("div", { class: "row" },
         btn("▶ Watch on this PC", () => play(x, false), "primary"),
         btn("Send to tablet", () => play(x, true)),

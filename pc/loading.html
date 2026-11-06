@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MuteHaram</title>
+<link rel="icon" href="assets/logo.png">
+<!-- Shown by "MuteHaram Library.bat" while the helper starts in the background (a few seconds), instead of
+     Chrome's "localhost refused to connect" page. It opens the library as soon as the helper answers. -->
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { display: grid; place-items: center; color: #f2ece2; font: 15px/1.45 "Segoe UI", system-ui, sans-serif;
+         background: linear-gradient(135deg, #040e19 0%, #0a1f33 55%, #15524f 120%); overflow: hidden; }
+  .box { text-align: center; }
+  img { width: 150px; height: 150px; border-radius: 34px; box-shadow: 0 12px 40px rgba(0, 0, 0, .55);
+        animation: in .8s ease-out both, breathe 2.6s ease-in-out .8s infinite; }
+  h1 { font: 700 34px Georgia, "Times New Roman", serif; letter-spacing: .5px; margin: 22px 0 2px; animation: fade 1s .2s both; }
+  .tag { color: #4fa89a; animation: fade 1s .35s both; }
+  .card { margin: 30px auto 0; width: 380px; padding: 16px 20px; border-radius: 16px; text-align: left;
+          background: rgba(8, 26, 43, .72); border: 1px solid rgba(79, 168, 154, .35); animation: fade 1s .5s both; }
+  .row { display: flex; align-items: center; gap: 12px; font-weight: 600; font-size: 16px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: #4fa89a; animation: pulse 1.4s ease-in-out infinite; }
+  .bar { height: 5px; margin-top: 14px; border-radius: 3px; background: rgba(255, 255, 255, .08); overflow: hidden; }
+  .bar i { display: block; height: 100%; width: 35%; border-radius: 3px; background: linear-gradient(90deg, #2f7f78, #4fa89a);
+           animation: slide 1.3s ease-in-out infinite; }
+  #slow { display: none; color: #a9b8c2; font-size: 13px; margin-top: 10px; font-weight: 400; }
+  @keyframes in { from { opacity: 0; transform: scale(.85); } to { opacity: 1; transform: none; } }
+  @keyframes breathe { 50% { transform: scale(1.03); } }
+  @keyframes fade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
+</style>
+</head>
+<body>
+<div class="box">
+  <img src="assets/logo.png" alt="">
+  <h1>MuteHaram</h1>
+  <div class="tag">Films and shows, without the music</div>
+  <div class="card">
+    <div class="row"><span class="dot"></span><span id="what">Starting MuteHaram …</span></div>
+    <div class="bar"><i></i></div>
+    <div id="slow">This is taking longer than usual. If it doesn't open, close this window and open MuteHaram again.</div>
+  </div>
+</div>
+<script>
+  const LIB = "http://127.0.0.1:47800";
+  const t0 = Date.now();
+  // the helper answers with the logo as soon as it is running: then the library opens
+  function check() {
+    const img = new Image();
+    img.onload = () => {
+      document.getElementById("what").textContent = "Opening your library …";
+      setTimeout(() => location.replace(LIB + "/library"), 250);
+    };
+    img.onerror = () => {
+      if (Date.now() - t0 > 25000) document.getElementById("slow").style.display = "block";
+      setTimeout(check, 500);
+    };
+    img.src = LIB + "/logo.png?" + Date.now();
+  }
+  setTimeout(check, 300);
+</script>
+</body>
+</html>
