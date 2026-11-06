@@ -70,20 +70,66 @@
   #space { color: var(--dim); font-size: 13px; }
   #offline { display: none; background: #3a2422; color: #ffd9d5; padding: 10px 28px; }
   .banner { background: #3a3122; color: #ffe9c2; padding: 10px 28px; }
-  footer { border-top: 1px solid var(--line); margin-top: 10px; padding: 16px 28px 26px !important; }
+
+  .hero { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 42px 24px 12px; }
+  .hero .logo { width: 116px; height: 116px; border-radius: 26px; box-shadow: 0 14px 40px rgba(0, 0, 0, .55);
+                animation: logoin .8s ease-out both; }
+  .hero h1 { font: 700 36px Georgia, "Times New Roman", serif; letter-spacing: .6px; margin: 18px 0 2px; }
+  .hero .tag { color: var(--accent); font-size: 15px; }
+  .status { width: min(640px, 100%); margin-top: 26px; text-align: left; background: var(--panel); border: 1px solid var(--line);
+            border-radius: 18px; padding: 18px 22px; box-shadow: 0 10px 30px rgba(0, 0, 0, .3); }
+  .srow { display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 700; }
+  .srow b { font-weight: 700; color: var(--accent); }
+  .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--accent); animation: pulse 1.8s ease-in-out infinite; }
+  .dot.idle { animation: none; opacity: .6; }
+  .dot.warn { background: var(--warn); }
+  .sdetail { color: var(--dim); font-size: 14px; margin-top: 6px; }
+  .sbar { height: 6px; margin-top: 14px; border-radius: 3px; background: rgba(255, 255, 255, .08); overflow: hidden; }
+  .sbar i { display: block; height: 100%; width: 0; border-radius: 3px; background: linear-gradient(90deg, #2f7f78, var(--accent)); transition: width .6s; }
+  .sbar.busy i { width: 35%; animation: slide 1.3s ease-in-out infinite; }
+  .sbar.off { visibility: hidden; height: 0; margin-top: 0; }
+  .sfoot { display: flex; align-items: center; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+  .grow { flex: 1; }
+  main { margin: 0 auto; }
+  .card { padding: 0; overflow: hidden; display: flex; flex-direction: column; transition: transform .15s, border-color .15s; }
+  .card:hover { transform: translateY(-2px); border-color: rgba(79, 168, 154, .6); }
+  .card > .body { padding: 14px 18px 16px; }
+  .poster { position: relative; height: 92px; background: linear-gradient(135deg, #0a1f33 0%, #12403f 70%, #1d6b62 130%);
+            display: flex; align-items: center; padding: 0 18px; }
+  .poster span { font: 700 44px Georgia, serif; color: rgba(242, 236, 226, .92); text-shadow: 0 3px 12px rgba(0, 0, 0, .4); }
+  .poster img { position: absolute; right: 14px; bottom: 12px; width: 28px; height: 28px; border-radius: 7px; opacity: .85; }
+  .poster .badge { position: absolute; right: 14px; top: 12px; font: 600 11px "Segoe UI", sans-serif; letter-spacing: .6px;
+                   text-transform: uppercase; color: var(--accent-ink); background: var(--accent); padding: 3px 9px; border-radius: 999px; }
+  .poster.seen { filter: saturate(.6) brightness(.85); }
+  footer { max-width: 1180px; margin: 6px auto 0; padding: 0 28px 30px; }
+  .conn { display: flex; align-items: center; gap: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 14px 18px; }
+  .conn img { width: 36px; height: 36px; border-radius: 9px; }
+  .conn b { font-size: 14px; }
+  @keyframes logoin { from { opacity: 0; transform: scale(.85); } to { opacity: 1; transform: none; } }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(290%); } }
 </style>
 </head>
 <body>
 <div id="offline">The MuteHaram helper is not running. Start it with <b>start_helper.bat</b> (in the MuteHaram pc folder); this window reconnects by itself.</div>
 <div id="oldExt" class="banner" style="display:none">The MuteHaram extension in Chrome is out of date, so expired website links can't be renewed and episodes added again aren't recognised.
 Open <b>chrome://extensions</b>, press the reload arrow on MuteHaram, then close and reopen this window.</div>
-<header>
-  <div class="brand"><img src="/logo.png" alt=""><h1>MuteHaram<small>Library</small></h1></div>
-  <div id="state">Loading ...</div>
-  <div id="space"></div>
-  <button id="tabletStop" class="stop" style="display:none" title="The tablet stops playing and says so">Stop sending to tablet</button>
-  <button id="toggle" class="primary">Start cleaning</button>
-</header>
+<section class="hero">
+  <img class="logo" src="/logo.png" alt="">
+  <h1>MuteHaram</h1>
+  <div class="tag">Films and shows, without the music</div>
+  <div class="status">
+    <div class="srow"><span class="dot" id="dot"></span><span id="state">Loading …</span></div>
+    <div class="sdetail" id="stateDetail"></div>
+    <div class="sbar" id="stateBar"><i></i></div>
+    <div class="sfoot">
+      <span id="space"></span>
+      <span class="grow"></span>
+      <button id="tabletStop" class="stop" style="display:none" title="The tablet stops playing and says so">Stop sending to tablet</button>
+      <button id="toggle" class="primary">Start cleaning</button>
+    </div>
+  </div>
+</section>
 <main>
   <h2>Ready to watch</h2>
   <div id="ready" class="grid"></div>
@@ -99,7 +145,7 @@ Open <b>chrome://extensions</b>, press the reload arrow on MuteHaram, then close
     (about 70 MB per hour); the picture comes from the website when you watch. A film moves to <b>Watched</b> once you
     play it; delete its cleaned sound there when you are done to free the space.</p>
 </main>
-<footer id="tabletInfo" class="help" style="padding: 0 24px 24px"></footer>
+<footer><div class="conn"><img src="/logo.png" alt=""><div><b>Tablet app</b><div id="tabletInfo" class="help"></div></div></div></footer>
 <div id="toast"></div>
 <script>
 "use strict";
@@ -179,6 +225,11 @@ function el(tag, attrs, ...kids) {
   return e;
 }
 // the name, with a pencil to change it (e.g. to tell two episodes of one show apart)
+function poster(x, badge, seen) {
+  const name = String(x.title || "?").replace(/^\s*watch(ing)?\s+/i, "").trim();
+  return el("div", { class: "poster" + (seen ? " seen" : "") }, el("span", {}, (name[0] || "?").toUpperCase()),
+            badge ? el("div", { class: "badge" }, badge) : "", el("img", { src: "/logo.png", alt: "" }));
+}
 function titleEl(x) {
   const pen = el("button", { class: "pen", title: "Change the name", onclick: async () => {
     const t = prompt("New name (for example: Black Bird — S1 E2)", x.title || "");
@@ -204,19 +255,30 @@ function render() {
   const run = data.runner || {};
   const items = data.items || [];
   const cur = items.find((x) => x.id === run.current);
-  const st = document.getElementById("state");
+  // the status card (like the tablet's): dot, title, explanation, progress bar
+  const st = document.getElementById("state"), sd = document.getElementById("stateDetail");
+  const sbar = document.getElementById("stateBar"), dot = document.getElementById("dot");
   const waiting = items.filter((x) => !["ready", "error", "held"].includes(x.status)).length;
+  const gpuWait = cur && cur.stage && cur.stage.startsWith("waiting");
+  st.innerHTML = "";
   if (run.running && cur) {
-    st.innerHTML = "";
-    st.append("Cleaning ", el("b", {}, cur.title || "(untitled)"), ` — ${Math.round(cur.progress * 100)} %` +
-              (cur.stage && cur.stage.startsWith("waiting") ? ". Waiting: another program is using the graphics card; it carries on by itself."
-               : (cur.eta_s ? `, about ${fmt(cur.eta_s)} left` : "") + ". It gives way by itself when another program needs the graphics card."));
+    st.append("Cleaning ", el("b", {}, cur.title || "(untitled)"));
+    sd.textContent = `${Math.round(cur.progress * 100)} % done` +
+      (gpuWait ? " · waiting: another program is using the graphics card (it carries on by itself)"
+               : (cur.eta_s ? ` · about ${fmt(cur.eta_s)} left` : "") + " · gives way by itself when another program needs the graphics card");
+    sbar.className = "sbar";
+    sbar.firstChild.style.width = (cur.progress * 100).toFixed(1) + "%";
   } else if (run.running) {
-    st.textContent = "Starting ...";
+    st.textContent = "Starting …";
+    sd.textContent = "Opening the next film in the queue";
+    sbar.className = "sbar busy";
   } else {
-    st.textContent = waiting ? `Paused. ${waiting} waiting in the queue. The graphics card is free.`
-                             : "Nothing waiting. The graphics card is free.";
+    st.textContent = waiting ? "Cleaning is paused" : "All caught up";
+    sd.textContent = waiting ? `${waiting} waiting in the queue · press Start cleaning when the PC is free`
+                             : "Everything in your library is ready to watch · the graphics card is free";
+    sbar.className = "sbar off";
   }
+  dot.className = "dot" + (gpuWait ? " warn" : run.running ? "" : " idle");
   const t = document.getElementById("toggle");
   t.textContent = run.running ? "Pause cleaning" : "Start cleaning";
   t.className = run.running ? "stop" : "primary";
@@ -225,8 +287,8 @@ function render() {
   document.getElementById("tabletStop").style.display = data.tablet_active ? "" : "none";
   const ti = data.tablet || {};
   document.getElementById("tabletInfo").textContent = ti.token
-    ? `Tablet app settings: PC address ${(ti.addresses || []).join(" or ")}  ·  token ${ti.token}` : "";
-  document.getElementById("space").textContent = `Cleaned sound on this PC: ${data.space_mb || 0} MB`;
+    ? `In its Settings: PC address ${(ti.addresses || []).join(" or ")}  ·  token ${ti.token}` : "";
+  document.getElementById("space").textContent = `${data.space_mb || 0} MB of cleaned sound on this PC`;
   const watched = items.filter((x) => x.status === "ready" && x.watched_at);
   const wbox = document.getElementById("watched");
   wbox.innerHTML = "";
@@ -234,7 +296,7 @@ function render() {
   document.getElementById("watchedNote").textContent =
     `(their cleaned sound uses ${data.watched_mb || 0} MB; delete it when you no longer need it)`;
   for (const x of watched) {
-    wbox.append(el("div", { class: "card" },
+    wbox.append(el("div", { class: "card" }, poster(x, x.resume_s ? "In progress" : "Watched", true), el("div", { class: "body" },
       titleEl(x),
       el("div", { class: "meta" }, [fmt(x.duration), x.size_mb ? `${x.size_mb} MB` : "",
                                     "watched " + new Date(x.watched_at * 1000).toLocaleDateString()].filter(Boolean).join(" · ")),
@@ -243,14 +305,14 @@ function render() {
         btn("Delete cleaned sound", async () => { if (confirm(`Delete the cleaned sound of "${x.title}" (${x.size_mb} MB)?`)) await api("/api/remove", { id: x.id }); }, "stop"),
         btn("▶ Watch again", () => play(x, false)),
         btn("Send to tablet", () => play(x, true)),
-        btn("Not watched yet", () => api("/api/watched", { id: x.id, watched: false })))));
+        btn("Not watched yet", () => api("/api/watched", { id: x.id, watched: false }))))));
   }
   const ready = items.filter((x) => x.status === "ready" && !x.watched_at);
   const rbox = document.getElementById("ready");
   rbox.innerHTML = "";
   if (!ready.length) rbox.append(el("div", { class: "empty" }, "Nothing ready yet."));
   for (const x of ready) {
-    rbox.append(el("div", { class: "card" },
+    rbox.append(el("div", { class: "card" }, poster(x, x.resume_s ? "In progress" : "Ready", false), el("div", { class: "body" },
       titleEl(x),
       el("div", { class: "meta" }, [fmt(x.duration), x.size_mb ? `${x.size_mb} MB` : "",
                                     x.unclean_s ? `${fmt(x.unclean_s)} could not be cleaned (silent)` : ""].filter(Boolean).join(" · ")),
@@ -259,7 +321,7 @@ function render() {
         btn("▶ Watch on this PC", () => play(x, false), "primary"),
         btn("Send to tablet", () => play(x, true)),
         btn("Mark watched", () => api("/api/watched", { id: x.id, watched: true })),
-        btn("Remove", async () => { if (confirm(`Remove "${x.title}" and its cleaned sound?`)) await api("/api/remove", { id: x.id }); }))));
+        btn("Remove", async () => { if (confirm(`Remove "${x.title}" and its cleaned sound?`)) await api("/api/remove", { id: x.id }); })))));
   }
 
   const q = items.filter((x) => x.status !== "ready");
