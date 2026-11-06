@@ -225,6 +225,14 @@ function el(tag, attrs, ...kids) {
   return e;
 }
 // the name, with a pencil to change it (e.g. to tell two episodes of one show apart)
+// Lowering the gaze: what the picture check found (only the count and length: nothing is ever shown)
+function gazeLine(x) {
+  const s = x.scenes;
+  if (!s) return "";
+  const text = !s.done ? (s.error ? "Scene check stopped: " + s.error : "Scenes not fully checked yet")
+    : s.parts ? `Lowering the gaze: ${s.parts} part${s.parts > 1 ? "s" : ""} covered (${fmt(s.seconds)})` : "Lowering the gaze: nothing to cover";
+  return el("div", { class: "resume" }, "◉ " + text);
+}
 function poster(x, badge, seen) {
   const name = String(x.title || "?").replace(/^\s*watch(ing)?\s+/i, "").trim();
   return el("div", { class: "poster" + (seen ? " seen" : "") }, el("span", {}, (name[0] || "?").toUpperCase()),
@@ -316,6 +324,7 @@ function render() {
       titleEl(x),
       el("div", { class: "meta" }, [fmt(x.duration), x.size_mb ? `${x.size_mb} MB` : "",
                                     x.unclean_s ? `${fmt(x.unclean_s)} could not be cleaned (silent)` : ""].filter(Boolean).join(" · ")),
+      gazeLine(x),
       x.resume_s ? el("div", { class: "resume" }, "▶ Carries on from " + clock(x.resume_s)) : "",
       el("div", { class: "row" },
         btn("▶ Watch on this PC", () => play(x, false), "primary"),
@@ -333,6 +342,8 @@ function render() {
     let label = "Waiting";
     if (x.status === "processing") {
       label = `Cleaning ${Math.round(x.progress * 100)} %` + (x.eta_s ? ` · about ${fmt(x.eta_s)} left` : "");
+      if (x.scenes && !x.scenes.done && x.scenes.progress != null) label += ` · scenes checked ${Math.round(x.scenes.progress * 100)} %`;
+      if (x.stage && x.stage.startsWith("checking scenes")) label = "Sound cleaned · " + x.stage.replace("checking scenes", "checking scenes:");
       if (x.stage && x.stage.startsWith("waiting")) label = `Waiting at ${Math.round(x.progress * 100)} %: another program is using the graphics card (carries on by itself)`;
       else if (x.stage && x.stage.startsWith("sharing")) label += " · sharing the graphics card with another program (slower)";
     }

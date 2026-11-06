@@ -136,6 +136,17 @@ def episode_key(title):
     return (show, int(s.group(1)) if s else 1, int(e.group(1))) if show else None
 
 
+def _scenes_summary(folder, progress):
+    """Lowering the gaze, for the library window: how far the picture check got and what it covers."""
+    path = os.path.join(folder, "scenes.json")
+    if not os.path.exists(path):
+        return None
+    sc = _read_json(path, {}) or {}
+    covers = sc.get("covers") or []
+    return {"done": bool(sc.get("done")), "progress": progress.get("scenes_progress"),
+            "parts": len(covers), "seconds": round(sum(max(0.0, e - s) for s, e in covers)), "error": sc.get("error", "")}
+
+
 class Library:
     def __init__(self, root=LIB_DIR):
         self.root = root
@@ -181,6 +192,7 @@ class Library:
                                 error=m.get("error") or p.get("error") or "", stage=p.get("stage", ""),
                                 unclean_s=p.get("unclean_s", 0), mode=p.get("mode", ""),
                                 watched_at=m.get("watched_at"), resume_s=positions.get("library:" + i),
+                                scenes=_scenes_summary(self.item_dir(i), p),
                                 player=(m.get("req") or {}).get("player", ""),
                                 size_mb=round(os.path.getsize(os.path.join(self.item_dir(i), "audio.opus")) / 1e6, 1)
                                 if ready else None))
