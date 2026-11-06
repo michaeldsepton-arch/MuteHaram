@@ -2,9 +2,11 @@
 Lowering the gaze: finds the parts of a film to cover (nudity, partial nudity, something sexual, kissing).
 
 The film's picture is read at one frame per second, in memory only: no frame is ever written to disk or shown.
-  * NudeNet (small nudity detector, on the processor) looks at every second;
-  * a vision model in Ollama (on this PC) answers a fixed yes/no question every 2 seconds, and every second
-    once something was found (and for the few seconds before it, to find where it began);
+  * every second, two fast checks on the processor: NudeNet (nudity) and CLIP (how much the frame looks like
+    kissing, a sexual scene, underwear ...);
+  * the vision model in Ollama (on this PC, ~3 s a frame) answers a short yes/no question for every frame those
+    flag, every second while a scene lasts (and for the few seconds before it, to find where it began), and
+    every 8 seconds anyway, in case both fast checks missed something;
   * a scene ends after 5 clear seconds in a row; it is covered with 5 extra seconds before and after.
 The result is a list of time ranges ([start, end] seconds); the players cover the picture and mute the sound
 there (the cover says "Lowering the gaze"). It is written to a small JSON file next to the film:
@@ -23,13 +25,19 @@ import numpy as np
 
 OLLAMA = "http://127.0.0.1:11434"
 MODEL = "gemma4:e4b"
-QUESTION = (
-    "You check frames of a film for a family that avoids immodest scenes. Look at this frame and answer with JSON "
-    'only, exactly these keys: {"nudity": true/false, "partial_nudity": true/false, "sexual": true/false, '
-    '"kissing": true/false}. nudity = exposed private parts or bare breasts or bare buttocks. partial_nudity = '
-    "underwear, lingerie, swimwear or a person mostly undressed. sexual = sexual activity or a clearly sexual "
-    "pose or touching. kissing = two people kissing (on the lips or passionately). If unsure, answer false."
-)
+# short on purpose: the model reads the question for every frame (a long one took ~2 s more each time)
+QUESTION = ("Does this image show nudity, a person in underwear or swimwear, sexual activity, or two people "
+            "kissing? Answer only yes or no.")
+CLIP_MODEL = "openai/clip-vit-base-patch32"
+# what CLIP compares each frame with: the first group is what to cover, the rest is ordinary film
+CLIP_COVER = ["two people kissing on the lips", "a couple kissing passionately", "a sexual scene in bed",
+              "a naked person", "a woman in underwear or lingerie", "a person in a bikini or swimwear",
+              "a shirtless couple embracing in bed"]
+CLIP_OTHER = ["people talking to each other", "a man and a woman talking face to face", "a person's face in close up",
+              "people walking in a street", "a room in a house", "a landscape", "a car or a vehicle",
+              "a group of people", "text on a screen", "a dark scene", "people fighting", "people at a table eating",
+              "a person hugging another person", "people in an office"]
+CLIP_FLAG = 0.30          # this much of CLIP's choice on the "cover" group: ask the vision model
 NUDE_LABELS = {"FEMALE_BREAST_EXPOSED", "FEMALE_GENITALIA_EXPOSED", "MALE_GENITALIA_EXPOSED", "BUTTOCKS_EXPOSED",
                "ANUS_EXPOSED"}
 HINT_LABELS = {"FEMALE_BREAST_COVERED", "BUTTOCKS_COVERED", "FEMALE_GENITALIA_COVERED"}
@@ -73,6 +81,7 @@ class Detector:
     def __init__(self, model=MODEL, log=print):
         from nudenet import NudeDetector
         self.nude = NudeDetector()
+        self._clip = None
         self.model = model
         self.log = log
         self.vlm_ok = ensure_ollama(log)
@@ -83,6 +92,25 @@ class Detector:
         labels = {d["class"] for d in self.nude.detect(frame[:, :, ::-1].copy()) if d["score"] >= 0.45}
         return "nudity" if labels & NUDE_LABELS else "hint" if labels & HINT_LABELS else "clear"
 
+    def clip(self, frame):
+        """How much the frame looks like something to cover (0..1), from CLIP (~0.1 s on the processor)."""
+        import torch
+        if self._clip is None:
+            os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+            from transformers import CLIPModel, CLIPProcessor
+            torch.set_num_threads(4)
+            m = CLIPModel.from_pretrained(CLIP_MODEL, use_safetensors=True).eval()
+            proc = CLIPProcessor.from_pretrained(CLIP_MODEL)
+            with torch.no_grad():
+                t = _features(m.get_text_features(**proc(text=CLIP_COVER + CLIP_OTHER, return_tensors="pt", padding=True)))
+            self._clip = (m, proc, t / t.norm(dim=-1, keepdim=True))
+        m, proc, text = self._clip
+        with torch.no_grad():
+            im = _features(m.get_image_features(**proc(images=frame, return_tensors="pt")))
+            im = im / im.norm(dim=-1, keepdim=True)
+            probs = (100.0 * im @ text.T).softmax(dim=-1)[0]
+        return float(probs[:len(CLIP_COVER)].sum())
+
     def ask(self, frame):
         """The vision model's answer: True = cover. Unreachable model: False (NudeNet still works)."""
         if not self.vlm_ok:
@@ -90,15 +118,14 @@ class Detector:
         import cv2
         ok, jpg = cv2.imencode(".jpg", frame[:, :, ::-1], [cv2.IMWRITE_JPEG_QUALITY, 85])
         body = {"model": self.model, "prompt": QUESTION, "images": [base64.b64encode(jpg.tobytes()).decode()],
-                "stream": False, "format": "json", "think": False, "keep_alive": "30m",
-                "options": {"temperature": 0, "num_predict": 60}}
+                "stream": False, "think": False, "keep_alive": "30m", "options": {"temperature": 0, "num_predict": 3}}
         try:
             req = urllib.request.Request(OLLAMA + "/api/generate", json.dumps(body).encode(),
                                          {"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=180) as r:
-                ans = json.loads(json.loads(r.read()).get("response") or "{}")
+                ans = (json.loads(r.read()).get("response") or "").strip().lower()
             self.vlm_errors = 0
-            return any(ans.get(k) is True for k in ("nudity", "partial_nudity", "sexual", "kissing"))
+            return ans.startswith("yes")
         except Exception as ex:
             self.vlm_errors += 1
             if self.vlm_errors in (1, 10, 100):
@@ -113,7 +140,7 @@ class Detector:
 
 
 class SceneScanner:
-    COARSE = 2        # seconds between the vision model's checks while nothing is found (any scene of 2 s+ is seen)
+    BACKSTOP = 8      # the vision model also looks every this many seconds (in case the fast checks miss something)
     LOOKBACK = 4      # seconds looked at again before a find, to see where it began
     CLEAR_RUN = 5     # clear seconds in a row that end a scene
     PAD = 5           # extra seconds covered before and after
@@ -222,7 +249,8 @@ class SceneScanner:
         last_save = time.time()
         for t, frame in self._frames(at):
             nn = self.det.nudenet(frame)
-            ask = in_scene or nn != "clear" or int(t) % self.COARSE == 0
+            flagged = nn != "clear" or self.det.clip(frame) >= CLIP_FLAG
+            ask = in_scene or flagged or int(t) % self.BACKSTOP == 0
             pos = nn == "nudity" or (ask and self.det.ask(frame))
             if not in_scene and pos:
                 first = t
@@ -257,6 +285,11 @@ class SceneScanner:
                 self.covers.append([max(0.0, scene_start - self.PAD), last_pos + self.PAD])
                 self.covers = merge(self.covers)
                 self.live = None
+
+
+def _features(out):
+    """CLIP's feature vectors (newer transformers return them inside an output object)."""
+    return out if hasattr(out, "norm") else out.pooler_output
 
 
 def merge(ranges):
