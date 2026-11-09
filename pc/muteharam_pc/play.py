@@ -431,6 +431,7 @@ def run_preclean(a, r, session, problem, log):
         save(stage=f"checking scenes {scene_progress(scan, session.duration) * 100:.0f} %",
              scenes_progress=scene_progress(scan, session.duration))
         scan.thread.join(5)
+    caption_covers(os.path.join(out_dir, "scenes.json"), pcm_path, total, log, lambda text: save(stage=text))
     save(stage="saving")
     opus = os.path.join(out_dir, "audio.opus")
     res = subprocess.run([cfg["ffmpeg"], "-y", "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", str(SAMPLE_RATE),
@@ -460,6 +461,30 @@ def start_scene_scan(url, headers, duration, path, cfg, log, start=0.0, alts=())
     except Exception as ex:
         log(f"scenes: could not start the picture check: {ex!r}")
         return None
+
+
+def caption_covers(scenes_path, pcm_path, total_frames, log, stage=lambda t: None):
+    """Library film: subtitles for its covered parts, from the cleaned sound (pcm: int16 stereo, 44.1 kHz)."""
+    from . import scenes
+    sc = scenes.load(scenes_path)
+    if not sc.get("covers") or sc.get("said") is not None and sc.get("said_done"):
+        return
+    try:
+        from .captions import to_16k_mono, transcribe
+        pcm = np.memmap(pcm_path, dtype=np.int16, mode="r").reshape(-1, 2)
+        said = []
+        for k, (s, e) in enumerate(sc["covers"]):
+            stage(f"writing subtitles for the covered parts ({k + 1}/{len(sc['covers'])})")
+            f0, f1 = int(s * SAMPLE_RATE), min(int(e * SAMPLE_RATE), len(pcm), total_frames)
+            if f1 > f0:
+                said += transcribe(to_16k_mono(np.array(pcm[f0:f1])), s)
+        del pcm
+        from .library import write_json
+        sc.update(said=said, said_done=True)
+        write_json(scenes_path, sc)
+        log(f"captions: {len(said)} line(s) for {len(sc['covers'])} covered part(s)")
+    except Exception as ex:
+        log(f"captions: could not write them ({ex!r})")
 
 
 def scene_args(path):
@@ -627,7 +652,7 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
     if front.scenes is not None and not front.scenes().get("done"):
         front.stage("Checking the first scenes")
         t0 = time.time()
-        while time.time() - t0 < 90 and front.scenes().get("scanned_to", 0) < a.start + 20 and not front.scenes().get("error"):
+        while time.time() - t0 < 150 and front.scenes().get("scanned_to", 0) < a.start + 45 and not front.scenes().get("error"):
             time.sleep(1)
     # the film only starts on the tablet once its first seconds are cleaned: no original sound (music) at the start
     front.stage("Cleaning the first seconds of sound")
@@ -843,8 +868,15 @@ def run(argv=None):
                                 live_scenes, cfg, log, start=max(0.0, a.start), alts=list(a.alt or []))
         if scan is None:
             live_scenes = None
-        elif a.tablet:
-            front.scenes = scan.state
+        else:
+            try:
+                from .captions import CoverCaptioner
+                src_audio = session.src
+                CoverCaptioner(scan, lambda s, d: src_audio.read_s16(s, d), log)
+            except Exception as ex:
+                log(f"captions: not available ({ex!r})")
+            if a.tablet:
+                front.scenes = scan.state
     if a.tablet:
         return run_tablet(a, cfg, r, notes, session, problem, headers, log, front, tablet_srv)
     if session is not None:

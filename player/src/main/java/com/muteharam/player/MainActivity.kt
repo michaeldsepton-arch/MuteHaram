@@ -91,10 +91,16 @@ class MainActivity : AppCompatActivity() {
     private var covering = false
     private var heldForCheck = false
     private var coverEnd = 0.0                              // where the covered part we are in ends (seconds)
+    private var coverStartS = 0.0
     private lateinit var gazeSkip: TextView
     private lateinit var gazeSaid: TextView                 // subtitles while covered (people may still be talking)
     private lateinit var gazeSaidBox: LinearLayout
-    private val said = ArrayList<String>()
+    private val said = ArrayList<String>()                  // the website's subtitles while covered
+    @Volatile
+    private var madeStart = DoubleArray(0)                  // MuteHaram's own subtitles of the covered parts
+    @Volatile
+    private var madeText: List<String> = emptyList()
+    private var shownMade = -1
     private var player: ExoPlayer? = null
     private lateinit var modeButton: TextView
     private lateinit var gearButton: TextView
@@ -282,7 +288,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
         val t = p.currentPosition / 1000.0
-        if (!scenesDone && t > scannedTo - 1) {
+        // playback stays well behind the check: a scene is found a few seconds after it starts and covered from
+        // before it (looking back + 5 s), so with less room the start of a scene could already have been seen
+        if (!scenesDone && t > scannedTo - 15) {
             if (!heldForCheck && p.isPlaying) {
                 heldForCheck = true
                 gazeSkip.visibility = View.GONE
@@ -294,7 +302,7 @@ class MainActivity : AppCompatActivity() {
             }
             return
         }
-        if (heldForCheck && (scenesDone || scannedTo > t + 8)) {
+        if (heldForCheck && (scenesDone || scannedTo > t + 40)) {
             heldForCheck = false
             gazeCover.visibility = View.GONE
             p.play()
@@ -306,7 +314,10 @@ class MainActivity : AppCompatActivity() {
             if (t >= c[i] && t <= c[i + 1]) { inside = true; break }
             i += 2
         }
-        if (inside) coverEnd = c[i + 1]
+        if (inside) {
+            coverEnd = c[i + 1]
+            coverStartS = c[i]
+        }
         if (inside && !covering) {
             covering = true
             said.clear()
@@ -325,14 +336,26 @@ class MainActivity : AppCompatActivity() {
             p.volume = 1f
         }
         if (covering) {
+            var due = 0
+            val st = madeStart
+            for (k in st.indices) if (st[k] >= coverStartS - 1 && st[k] <= t + 0.3) due++
+            if (due != shownMade) showSaid()
             val left = (coverEnd - t).toInt()
             gazeSkip.text = "Skip  ▶   (" + (left / 60) + ":" + String.format("%02d", left % 60) + ")"
         }
     }
 
+    /** The panel: MuteHaram's own subtitles spoken so far in this covered part (the website's if not ready). */
     private fun showSaid() {
-        gazeSaid.text = if (said.isEmpty()) "(nothing said yet, or the subtitles are off: turn them on with the CC button)"
-        else said.takeLast(10).joinToString("\n\n")
+        val t = (player?.currentPosition ?: 0L) / 1000.0
+        val coverStart = coverStartS
+        val mine = ArrayList<String>()
+        val st = madeStart
+        val tx = madeText
+        for (k in st.indices) if (st[k] >= coverStart - 1 && st[k] <= t + 0.3 && k < tx.size) mine.add(tx[k])
+        shownMade = mine.size
+        val lines = if (mine.isNotEmpty()) mine else said
+        gazeSaid.text = if (lines.isEmpty()) "(nothing said yet)" else lines.takeLast(10).joinToString("\n\n")
     }
 
     /** The PC's scene check, sent with every check-in. */
@@ -350,6 +373,18 @@ class MainActivity : AppCompatActivity() {
             out[2 * k + 1] = r.optDouble(1)
         }
         covers = out
+        val sd = sc.optJSONArray("said")
+        if (sd != null) {
+            val st = DoubleArray(sd.length())
+            val tx = ArrayList<String>()
+            for (k in 0 until sd.length()) {
+                val r = sd.optJSONArray(k)
+                st[k] = r?.optDouble(0) ?: 0.0
+                tx.add(r?.optString(2) ?: "")
+            }
+            madeText = tx
+            madeStart = st
+        }
         scannedTo = sc.optDouble("scanned_to", 0.0)
         scenesDone = sc.optBoolean("done", false) || sc.optString("error").isNotEmpty()
         if (!hasScenes) {

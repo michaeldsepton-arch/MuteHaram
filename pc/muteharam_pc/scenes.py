@@ -213,6 +213,7 @@ class SceneScanner:
         self.out_path = out_path
         self.start = max(0.0, float(start))
         self.covers = [list(c) for c in (covers or [])]
+        self.said = []                         # subtitles of the covered parts: [start, end, text] (captions.py)
         self.live = None                       # the scene being found right now: [start, end so far]
         self.scanned_to = self.start
         self.done = False
@@ -230,7 +231,13 @@ class SceneScanner:
     def state(self):
         with self._lock:
             cov = [list(c) for c in self.covers] + ([list(self.live)] if self.live else [])
-            return {"covers": merge(cov), "scanned_to": round(self.scanned_to, 1), "done": self.done, "error": self.error}
+            return {"covers": merge(cov), "scanned_to": round(self.scanned_to, 1), "done": self.done, "error": self.error,
+                    "said": list(self.said)}
+
+    def add_said(self, lines):
+        with self._lock:
+            self.said = sorted(self.said + [list(x) for x in lines])
+        self.save()
 
     def save(self):
         if not self.out_path:
