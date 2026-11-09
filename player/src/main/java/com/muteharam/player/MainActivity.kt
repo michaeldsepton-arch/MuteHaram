@@ -90,6 +90,11 @@ class MainActivity : AppCompatActivity() {
     private var hasScenes = false
     private var covering = false
     private var heldForCheck = false
+    private var coverEnd = 0.0                              // where the covered part we are in ends (seconds)
+    private lateinit var gazeSkip: TextView
+    private lateinit var gazeSaid: TextView                 // subtitles while covered (people may still be talking)
+    private lateinit var gazeSaidBox: LinearLayout
+    private val said = ArrayList<String>()
     private var player: ExoPlayer? = null
     private lateinit var modeButton: TextView
     private lateinit var gearButton: TextView
@@ -266,6 +271,8 @@ class MainActivity : AppCompatActivity() {
             if (covering || heldForCheck) {
                 covering = false
                 gazeCover.visibility = View.GONE
+                gazeSaidBox.visibility = View.GONE
+                gazeSkip.visibility = View.GONE
                 p?.volume = 1f
                 if (heldForCheck) {
                     heldForCheck = false
@@ -278,6 +285,8 @@ class MainActivity : AppCompatActivity() {
         if (!scenesDone && t > scannedTo - 1) {
             if (!heldForCheck && p.isPlaying) {
                 heldForCheck = true
+                gazeSkip.visibility = View.GONE
+                gazeSaidBox.visibility = View.GONE
                 p.pause()
                 gazeTitle.text = "Checking the next scenes …"
                 gazeLine.text = "It carries on by itself in a moment"
@@ -297,17 +306,33 @@ class MainActivity : AppCompatActivity() {
             if (t >= c[i] && t <= c[i + 1]) { inside = true; break }
             i += 2
         }
+        if (inside) coverEnd = c[i + 1]
         if (inside && !covering) {
             covering = true
+            said.clear()
+            showSaid()
             gazeTitle.text = "Lowering the gaze"
             gazeLine.text = "A scene is covered · the sound comes back by itself"
             gazeCover.visibility = View.VISIBLE
+            gazeSaidBox.visibility = View.VISIBLE
+            gazeSkip.visibility = View.VISIBLE
             p.volume = 0f
         } else if (!inside && covering) {
             covering = false
             gazeCover.visibility = View.GONE
+            gazeSaidBox.visibility = View.GONE
+            gazeSkip.visibility = View.GONE
             p.volume = 1f
         }
+        if (covering) {
+            val left = (coverEnd - t).toInt()
+            gazeSkip.text = "Skip  ▶   (" + (left / 60) + ":" + String.format("%02d", left % 60) + ")"
+        }
+    }
+
+    private fun showSaid() {
+        gazeSaid.text = if (said.isEmpty()) "(nothing said yet, or the subtitles are off: turn them on with the CC button)"
+        else said.takeLast(10).joinToString("\n\n")
     }
 
     /** The PC's scene check, sent with every check-in. */
@@ -395,8 +420,41 @@ class MainActivity : AppCompatActivity() {
                 gravity = Gravity.CENTER
             }
             addView(gazeLine, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(8) })
+            // skip to where the covered part ends
+            gazeSkip = TextView(context).apply {
+                setTextColor(CREAM)
+                textSize = 16f
+                typeface = Typeface.DEFAULT_BOLD
+                setPadding(dp(22), dp(11), dp(22), dp(11))
+                background = pill(0xCC15524F.toInt(), TEAL)
+                visibility = View.GONE
+                setOnClickListener { player?.seekTo(((coverEnd + 0.2) * 1000).toLong()) }
+            }
+            addView(gazeSkip, LinearLayout.LayoutParams(-2, -2).apply { topMargin = dp(22) })
         }
         root.addView(gazeCover, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        // what is being said while the picture is covered: the subtitles, in a panel on the right
+        gazeSaidBox = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = pill(0xE6081A2B.toInt(), TEAL_DIM, 16)
+            setPadding(dp(18), dp(16), dp(18), dp(16))
+            visibility = View.GONE
+            addView(TextView(context).apply {
+                text = "What is said"
+                setTextColor(TEAL)
+                textSize = 15f
+                typeface = Typeface.DEFAULT_BOLD
+            })
+            gazeSaid = TextView(context).apply {
+                setTextColor(CREAM)
+                textSize = 15f
+                setLineSpacing(0f, 1.2f)
+                gravity = Gravity.BOTTOM
+            }
+            addView(gazeSaid, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(10) })
+        }
+        root.addView(gazeSaidBox, FrameLayout.LayoutParams(dp(330), ViewGroup.LayoutParams.MATCH_PARENT,
+            Gravity.END).apply { setMargins(dp(16), dp(70), dp(16), dp(70)) })
 
         // messages while a film plays: a rounded panel at the top, out of the way of the play/pause button
         status = TextView(this).apply {
@@ -836,6 +894,15 @@ class MainActivity : AppCompatActivity() {
                 }
                 android.util.Log.e("MuteHaramPlayer", "playback error", error)
                 setStatus("Playback problem: " + error.errorCodeName + "\n" + (error.message ?: "") + why + "\n(tap here to try again)", tappable = true)
+            }
+
+            override fun onCues(cueGroup: androidx.media3.common.text.CueGroup) {
+                if (!covering) return
+                val text = cueGroup.cues.mapNotNull { it.text?.toString()?.trim() }.filter { it.isNotEmpty() }.joinToString(" ")
+                if (text.isNotEmpty() && said.lastOrNull() != text) {
+                    said.add(text)
+                    showSaid()
+                }
             }
 
             override fun onIsPlayingChanged(isPlaying: Boolean) {
