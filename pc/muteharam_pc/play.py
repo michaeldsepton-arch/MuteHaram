@@ -566,7 +566,8 @@ def start_tablet_front(a, log):
     """Stop older tablet sessions and answer the tablet at once with progress messages."""
     from .stream_server import load_or_create_token, lan_addresses
     stop_other_tablet_sessions(log)
-    front = TabletFront(log)
+    global ACTIVE_FRONT
+    front = ACTIVE_FRONT = TabletFront(log)
     srv = None
     for attempt in range(10):                   # the port of a session that was just stopped may need a moment
         try:
@@ -648,10 +649,29 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
         hub.close()
 
 
+ACTIVE_FRONT = None        # the tablet's progress server, while "Send to the tablet" is being prepared
+
+
+def tell_tablet_failed(why):
+    """The PC could not prepare the film: the tablet must say so (not keep counting "preparing ...")."""
+    front = ACTIVE_FRONT
+    if front is None or front.hub is not None:
+        return
+    text = str(why or "").strip().splitlines()
+    first = next((x for x in text if x.strip() and "Warning" not in x), "unknown problem")
+    if "yt-dlp could not open" in str(why) or "ffprobe could not read" in str(why) or "could not be opened" in str(why):
+        first = ("the website's video could not be opened on the PC (some sites lock their video to their own "
+                 "player). On the website try another server, or another site")
+    front.fail(first[:220])
+    time.sleep(25)                        # the tablet checks every 2 s: let it see the message
+
+
 def main(argv=None):
     try:
         run(argv)
     except SystemExit as e:
+        if e.code not in (None, 0):
+            tell_tablet_failed(e.code)
         if isinstance(e.code, str):
             ui_error(e.code)
             sys.exit(1)
@@ -662,6 +682,7 @@ def main(argv=None):
         import traceback
         traceback.print_exc()
         nl = chr(10)
+        tell_tablet_failed(repr(e))
         ui_error("MuteHaram hit an unexpected problem:" + nl + nl + repr(e) + nl + nl +
                  "Details are in the pc/logs folder.")
         sys.exit(1)
