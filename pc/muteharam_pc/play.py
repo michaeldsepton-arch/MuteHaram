@@ -269,6 +269,11 @@ class TabletFront:
     def ready(self, hub, doc):
         self.hub, self.doc = hub, doc
 
+    def level_route(self, q):
+        """/level?l=auto|normal|strong|strongest&pos=<ms> : clean again from there, as strict as asked; answers
+        once the sound at that point is ready (the tablet then reloads its sound)."""
+        return set_strength(self.hub, q, self.log)
+
     def session_json(self, q):
         # where the tablet is in the film (saved now and then: the next "Send to the tablet" carries on there)
         pos = (q.get("pos") or [""])[0]
@@ -285,7 +290,8 @@ class TabletFront:
         if self.hub is None:
             return {"preparing": True, "failed": self.failed, "status": self.text,
                     "elapsed_s": int(time.time() - self.t0)}
-        doc = dict(self.doc, mode=self.hub.mode, age_s=int(time.time() - self.doc["id"] / 1000))
+        doc = dict(self.doc, mode=self.hub.mode, age_s=int(time.time() - self.doc["id"] / 1000),
+                   level=getattr(self.hub, "level", "normal"))
         if self.scenes is not None:
             try:
                 doc["scenes"] = self.scenes()
@@ -487,6 +493,26 @@ def caption_covers(scenes_path, pcm_path, total_frames, log, stage=lambda t: Non
         log(f"captions: could not write them ({ex!r})")
 
 
+def set_strength(hub, q, log):
+    """Change how strict the music removal is while watching (tablet button, L in mpv); remembered for next time."""
+    from .engine import LEVELS
+    level = (q.get("l") or [""])[0]
+    if level not in LEVELS:
+        return {"ok": False, "error": "unknown strength", "level": getattr(hub, "level", "")}
+    pos = (q.get("pos") or ["0"])[0]
+    at = int(float(pos) / 1000.0 * SAMPLE_RATE) if pos.replace(".", "", 1).isdigit() else None
+    try:
+        hub.set_level(level, at)
+    except Exception as ex:
+        return {"ok": False, "error": str(ex), "level": getattr(hub, "level", "")}
+    try:
+        config.save_setting("strength", level)
+    except Exception:
+        pass
+    log(f"strength changed to {level}")
+    return {"ok": True, "level": level}
+
+
 def scene_args(path):
     """mpv options for Lowering the gaze (mpv_scenes.lua covers the listed parts; G turns it on / off)."""
     if not path or not S_SETTINGS().get("scenes", True):
@@ -597,7 +623,7 @@ def start_tablet_front(a, log):
     for attempt in range(10):                   # the port of a session that was just stopped may need a moment
         try:
             srv = make_server(front, host="0.0.0.0", port=a.tablet_port, token=load_or_create_token(),
-                              routes={"/session.json": front.session_json})
+                              routes={"/session.json": front.session_json, "/level": front.level_route})
             break
         except OSError:
             if attempt == 9:
@@ -785,7 +811,7 @@ def run(argv=None):
         src = MediaSource(rr["media_url"], rr["headers"], cfg["ffmpeg"], cfg["ffprobe"])
         sess = Session(src, duration=rr["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
                        device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
-                       channels_mode=a.channels, mode=a.mode)
+                       channels_mode=a.channels, mode=a.mode, level=S.get("strength", "auto"))
         try:
             ok, why = src.probe(max(0.0, min(a.start, (rr["duration"] or 1e9) - 3)))
             if not ok:
@@ -797,7 +823,7 @@ def run(argv=None):
         sess.remake = lambda m, start_block=0: Session(src, duration=sess.duration, window_s=a.window, hop_s=a.hop,
                                         music_gain=a.gain, device="cpu" if a.cpu else None,
                                         models_dir=cfg["models_dir"], log=log, channels_mode=a.channels, mode=m,
-                                        start_block=start_block)
+                                        start_block=start_block, level=sess.level)
         return sess
 
     # Look at every candidate address and try the most promising first: a main ("master") playlist
@@ -882,7 +908,7 @@ def run(argv=None):
     if session is not None:
         hub = SessionHub(session, session.remake)
         session = hub                      # closing later closes whichever session is current
-        srv = make_server(hub)
+        srv = make_server(hub, routes={"/level": lambda q: set_strength(hub, q, log)})
         audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"
         log("cleaned audio at", audio_url)
     if a.no_player:
@@ -896,7 +922,10 @@ def run(argv=None):
 
     cmd = [cfg["mpv"], r["mpv_url"]]
     if problem is None:
-        cmd += [f"--audio-file={audio_url}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}"]
+        cmd += [f"--audio-file={audio_url}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}",
+                f"--script={os.path.join(HERE, 'mpv_strength.lua')}",
+                f"--script-opts-append=muteharam-level-port={srv.server_address[1]}",
+                f"--script-opts-append=muteharam-level={getattr(hub, 'level', 'auto')}"]
     else:
         # The AI engine could not start (no GPU driver? model missing?): still play the video.
         why = " ".join(str(problem).split())[:160]

@@ -53,6 +53,10 @@ import java.net.URLEncoder
  * straight from the website; the sound is the music-free audio the PC serves over Wi-Fi. Pause,
  * seek and captions work here on the tablet.
  */
+private val LEVEL_NAMES = mapOf(
+    "auto" to "Auto", "normal" to "Normal", "strong" to "Strong", "strongest" to "Strongest (speech only)"
+)
+
 // the logo's colours
 private const val NAVY_DEEP = 0xFF040E19.toInt()
 private const val NAVY = 0xFF0A1F33.toInt()
@@ -90,6 +94,13 @@ class MainActivity : AppCompatActivity() {
     private var hasScenes = false
     private var covering = false
     private var heldForCheck = false
+
+    // how strict the music removal is (live cleaning): auto / normal / strong / strongest (speech only)
+    private lateinit var levelButton: TextView
+    @Volatile
+    private var pcLevel = ""
+    @Volatile
+    private var levelBusy = false
     private var coverEnd = 0.0                              // where the covered part we are in ends (seconds)
     private var coverStartS = 0.0
     private lateinit var gazeSkip: TextView
@@ -252,6 +263,41 @@ class MainActivity : AppCompatActivity() {
             addView(col, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
             addView(homeFooter, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = dp(18) })
         }
+    }
+
+    /** Next strictness: the PC cleans again from here, then the film restarts at the same spot with that sound. */
+    private fun changeLevel() {
+        val p = player ?: return
+        val s = current ?: return
+        if (levelBusy) return
+        val order = listOf("auto", "normal", "strong", "strongest")
+        val want = order[(order.indexOf(pcLevel).coerceAtLeast(0) + 1) % order.size]
+        val pos = p.currentPosition
+        levelBusy = true
+        p.pause()
+        setStatus("Music removal: " + LEVEL_NAMES[want] + "\nCleaning again from here, a few seconds ...")
+        Thread {
+            try {
+                val url = "http://" + curHost + ":47804/level?t=" + URLEncoder.encode(curToken, "UTF-8") +
+                    "&l=" + want + "&pos=" + pos
+                val j = org.json.JSONObject(httpGet(url, readTimeoutMs = 180000))
+                if (j.optBoolean("ok")) {
+                    pcLevel = want
+                    ui.post {
+                        levelBusy = false
+                        if (current === s) play(s.copy(startSeconds = pos / 1000.0), curHost, curToken)
+                    }
+                } else {
+                    levelBusy = false
+                    ui.post { p.play() }
+                    setStatus("Could not change the music removal: " + j.optString("error"))
+                }
+            } catch (e: Exception) {
+                levelBusy = false
+                ui.post { p.play() }
+                setStatus("Could not change the music removal (" + (e.message ?: e.javaClass.simpleName) + ")")
+            }
+        }.start()
     }
 
     private fun gazeOn() = prefs.getBoolean("gaze", true)
@@ -559,6 +605,21 @@ class MainActivity : AppCompatActivity() {
         )
         showGazeButton()
         ui.post(gazeTimer)
+        levelButton = TextView(this).apply {
+            setTextColor(CREAM)
+            textSize = 14f
+            setPadding(dp(16), dp(9), dp(16), dp(9))
+            background = pill(0xCC081A2B.toInt(), TEAL_DIM)
+            visibility = View.GONE
+            setOnClickListener { changeLevel() }
+        }
+        root.addView(
+            levelButton,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            ).apply { setMargins(dp(16), dp(120), dp(16), dp(16)) }
+        )
         setContentView(root)
         // Settings and the sound-mode button appear together with the player's controls (tap the picture) and fade with them.
         playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
@@ -729,6 +790,11 @@ class MainActivity : AppCompatActivity() {
                     }
                     val s = SessionInfo.parse(text)
                     readScenes(j)
+                    val lv = j.optString("level")
+                    if (lv != pcLevel && !levelBusy) {
+                        pcLevel = lv
+                        ui.post { refreshOverlay() }
+                    }
                     if (s.id == stoppedId) {
                         // this film failed to play: leave the error message up until it is tapped or a new film is sent
                     } else if (s.id == resumeId && resumeMs > 0 && s.id != currentId) {
@@ -807,6 +873,9 @@ class MainActivity : AppCompatActivity() {
         gearButton.visibility = if (show) View.VISIBLE else View.GONE
         modeButton.visibility = if (show && current != null) View.VISIBLE else View.GONE
         gazeButton.visibility = if (show && current != null && hasScenes) View.VISIBLE else View.GONE
+        val live = pcLevel in LEVEL_NAMES
+        levelButton.visibility = if (show && current != null && live) View.VISIBLE else View.GONE
+        if (live) levelButton.text = "♪  Music removal: " + LEVEL_NAMES[pcLevel]
     }
 
     private fun noteLoad(info: LoadEventInfo, error: IOException?) {

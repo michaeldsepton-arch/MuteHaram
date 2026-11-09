@@ -131,7 +131,7 @@ class MediaSource:
             if attempt == 0 and self._maybe_enable_picky(err):
                 continue
             why = err.strip().splitlines()
-            raise RuntimeError("ffmpeg returned no audio: " + (" | ".join(why[-3:]) or f"exit code {res.returncode}"))
+            raise RuntimeError("ffmpeg returned no audio: " + (" | ".join(why[-3:]) or "no message"))
 
     @staticmethod
     def _read_bytes(cmd, nbytes, timeout):
@@ -193,11 +193,51 @@ class MediaSource:
         return proc
 
 
+# How strict the music removal is ("strength"):
+#   normal     the standard model (TIGER) takes the music out; voices and sound effects stay
+#   strong     Bandit v2 (a film model) takes the music out instead: it catches music TIGER leaves behind
+#   strongest  Bandit v2 keeps the speech only (effects go too)
+#   auto       normal, and for each block a music detector (AST, AudioSet) listens to the result: where music
+#              is still heard the block is cleaned again at strong, and if needed at strongest. Blocks are
+#              cleaned ahead of playback, so this never pauses anything.
+LEVELS = ("auto", "normal", "strong", "strongest")
+# the detector's "Music" score above which music is still heard (clean dialogue scores 0.01-0.03; measured)
+AUTO_MUSIC = 0.15
+_EXTRA = {}
+
+
+def _bandit():
+    if "bandit" not in _EXTRA:
+        from . import bandit_model
+        _EXTRA["bandit"] = bandit_model.load_bandit()
+    return _EXTRA["bandit"]
+
+
+def _detector(device):
+    """-> score(x44 [n, 2] float) -> how much the detector hears "Music" (0..1)."""
+    if "ast" not in _EXTRA:
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+        from transformers import ASTFeatureExtractor, ASTForAudioClassification
+        from scipy.signal import resample_poly
+        name = "MIT/ast-finetuned-audioset-10-10-0.4593"
+        model = ASTForAudioClassification.from_pretrained(name, use_safetensors=True).eval().to(device)
+        fe = ASTFeatureExtractor.from_pretrained(name)
+        music = [i for i, l in model.config.id2label.items() if l == "Music"][0]
+
+        @torch.no_grad()
+        def score(x):
+            m = resample_poly(np.asarray(x, np.float32).mean(axis=1), 160, 441).astype(np.float32)
+            inp = fe(m, sampling_rate=16000, return_tensors="pt").to(device)
+            return float(torch.sigmoid(model(**inp).logits)[0, music])
+        _EXTRA["ast"] = score
+    return _EXTRA["ast"]
+
+
 class Session:
     def __init__(self, source, duration=None, window_s=10.0, hop_s=6.0, lookahead_s=150.0,
                  music_gain=1.0, device=None, models_dir=None, log=print,
                  channels_mode="auto", patience_s=45.0, mode="music", start_block=0,
-                 fallback="silence"):
+                 fallback="silence", level="normal"):
         assert mode == "music"
         assert window_s > hop_s > 0
         self.src = source
@@ -219,6 +259,8 @@ class Session:
         self.stereo_sep = channels_mode == "stereo" or (channels_mode == "auto" and self.device.type == "cuda")
         self.patience = patience_s
         self.fallback = fallback
+        self.level = level if level in LEVELS else "normal"
+        self.stepped_up = 0                    # auto: blocks cleaned again at a stricter level
         self.fallbacks = 0
         self.log(f"engine: {self.duration:.0f}s of audio, window {window_s:g}s / hop {hop_s:g}s on {self.device}, "
                  f"{'separate L/R' if self.stereo_sep else 'mono mix'} processing, mode {mode}")
@@ -534,23 +576,83 @@ class Session:
                     last = b
                 time.sleep(0.5)
 
+    def set_level(self, level, at_frame=None):
+        """Change how strict the removal is: the blocks from the playing one on are cleaned again."""
+        if level not in LEVELS:
+            raise ValueError(f"unknown strength {level!r}")
+        with self.cv:
+            self.level = level
+            b = self.want if at_frame is None else max(0, min(at_frame // self.hop, self.nblocks - 1))
+            self.want = b
+            self.ready[b:] = False
+            self.cv.notify_all()
+        self.log(f"engine: strength {level}, cleaning again from {b * self.hop / SAMPLE_RATE:.0f} s")
+
     @torch.no_grad()
     def _clean(self, x):
-        """x: [win, 2] float32 -> cleaned centre [hop, 2] int16."""
+        """x: [win, 2] float32 -> cleaned centre [hop, 2] int16, as strict as self.level says."""
         c = slice(self.margin, self.margin + self.hop)
+        level = self.level
+        try:
+            if level in ("strong", "strongest"):
+                return self._bandit_level(x, c, level == "strongest")
+            y = self._tiger(x, c)
+            if level == "auto":
+                score = _detector(self.device)
+                heard = score(y)
+                if heard >= AUTO_MUSIC:
+                    st = self._bandit_stems(x)
+                    y2 = (st["speech"] + st["sfx"])[c]
+                    heard2 = score(y2)
+                    y = y2 if heard2 < AUTO_MUSIC else st["speech"][c]
+                    self.stepped_up += 1
+                    if self.stepped_up <= 30 or self.stepped_up % 50 == 0:
+                        self.log(f"auto: music still heard ({heard:.2f}) -> {'strong' if heard2 < AUTO_MUSIC else 'strongest (speech only)'}"
+                                 f" ({self.stepped_up} block(s) so far)")
+            return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
+        except (FileNotFoundError, ImportError, OSError) as ex:
+            # Bandit or the detector is not available: the standard cleaning, and say so once
+            if not getattr(self, "_level_warned", False):
+                self._level_warned = True
+                self.log(f"engine: strength {level} not available ({ex}); using normal")
+            self.level = "normal"
+            y = self._tiger(x, c)
+            return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+    def _bandit_stems(self, x):
+        from . import bandit_model
+        model, dev = _bandit()
+        return bandit_model.separate(model, dev, x, stems=("speech", "sfx"))
+
+    def _bandit_level(self, x, c, speech_only):
+        st = self._bandit_stems(x)
+        y = st["speech"][c] if speech_only else (st["speech"] + st["sfx"])[c]
+        return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+    def _tiger(self, x, c):
+        """The standard model: the music taken out of the centre of window x -> float [hop, 2]."""
         if self.stereo_sep:
             t = torch.from_numpy(np.ascontiguousarray(x.T)).to(self.device)[:, None, :]   # [2,1,win]
             est = self.net(t)[:, self.target, :].float().cpu().numpy().T[c]               # [hop,2]
         else:
             mono = torch.from_numpy(x.mean(axis=1)).to(self.device)[None, None]
             est = self.net(mono)[0, self.target].float().cpu().numpy()[c, None]           # [hop,1]
-        xc = x[c]
-        y = xc - self.gain * est                           # est is the music
-        return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
+        return x[c] - self.gain * est                      # est is the music
 
 
 class SessionHub:
     """What the audio server serves: the current cleaning Session (or a finished file from the library)."""
+
+    def set_level(self, level, at_frame=None):
+        if not hasattr(self.cur, "set_level"):
+            raise ValueError("this film was cleaned in advance (library): its strength is fixed")
+        self.cur.set_level(level, at_frame)
+        if at_frame is not None:
+            self.cur.prepare(timeout=120, at_frame=at_frame)
+
+    @property
+    def level(self):
+        return getattr(self.cur, "level", "precleaned")
 
     def __init__(self, session, remake):
         self.cur = session
