@@ -24,3 +24,7 @@ pc/mpv_config/fonts/
 experiments/
 samples/
 pc/library/
+
+# personal: chosen settings and where each film was left (made on this PC)
+pc/settings.json
+pc/positions.json
