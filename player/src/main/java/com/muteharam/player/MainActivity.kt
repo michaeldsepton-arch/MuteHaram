@@ -550,9 +550,7 @@ class MainActivity : AppCompatActivity() {
             if (i > 0) {
                 // the gap between lines (as in the mock-up: about half a line)
                 val g = b.length
-                b.append("
- 
-")
+                b.append("\n\u200A\n")
                 b.setSpan(RelativeSizeSpan(0.36f), g, b.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
             }
             val start = b.length
