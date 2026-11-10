@@ -48,6 +48,8 @@ DEFAULT_SETTINGS = {
     "scenes_cover": True,     # cover those scenes while playing (G in the player, the button on the tablet)
     "scenes_model": "gemma4:e4b",  # the Ollama vision model that checks the frames
     "strength": "auto",       # how strict the music removal is: auto | normal | strong | strongest (speech only)
+    "subtitles": "site",      # site: the website's subtitles (if it has them) | own: MuteHaram's own (Cohere) | off
+    "scenes_gpu_layers": 4,   # how much of the scene model runs on the graphics card (scenes.GPU_LAYERS)
 }
 
 

@@ -27,10 +27,19 @@ OLLAMA = "http://127.0.0.1:11434"
 MODEL = "gemma4:e4b"
 # Measured on a film with many such scenes: the plain question ("nudity, underwear, sexual, kissing?") made the
 # small model answer "no" to almost everything a larger model flagged. This wording asks about modesty instead.
+# Then (watching Young Sherlock) it covered a chase, a man shaving and a kiss on the cheek: those are named as
+# not counting.
 QUESTION = ("This frame is from a film. A family that keeps strict modesty wants to skip any shot that shows: "
-            "bare skin of the chest, back, belly or thighs; cleavage; underwear, lingerie or swimwear; nudity; "
-            "people in bed together intimately; sexual activity or touching; or kissing. Does this shot show "
-            "any of these? Answer only yes or no.")
+            "a woman's cleavage, bare shoulders, bare belly or bare thighs; anyone in underwear, lingerie or "
+            "swimwear; nudity; people in bed together intimately; sexual activity or sexual touching; or a "
+            "romantic kiss on the lips. A man's bare chest, fighting, running, hugging, or a kiss on the cheek "
+            "or forehead do not count. Does this shot show any of these? Answer only yes or no.")
+# Within one shot the frames hardly change: the answer for a frame this alike (CLIP, cosine) and at most this many
+# seconds older is used again instead of asking again (most questions were about the same shot, second after second)
+SAME_SHOT = 0.96
+SAME_SHOT_S = 4
+GPU_LAYERS = 4            # Ollama: this much of the vision model on the graphics card (~1 GB: room is left for the
+                          # music removal and the subtitles; the whole model would take 5 GB and slow them down)
 CLIP_MODEL = "openai/clip-vit-base-patch32"
 # what CLIP compares each frame with: the first group is what to cover, the rest is ordinary film
 CLIP_COVER = ["two people kissing on the lips", "a couple kissing passionately", "a sexual scene in bed",
@@ -139,14 +148,18 @@ def ensure_ollama(log=print, wait_s=40):
 class Detector:
     """Is this frame one to cover? NudeNet first (fast), the vision model when needed."""
 
-    def __init__(self, model=MODEL, log=print):
+    def __init__(self, model=MODEL, log=print, gpu_layers=GPU_LAYERS):
         from nudenet import NudeDetector
         self.nude = NudeDetector()
         self._clip = None
         self.model = model
         self.log = log
+        self.gpu_layers = gpu_layers
         self.vlm_ok = ensure_ollama(log)
         self.vlm_errors = 0
+        self.asked = 0                         # questions to the vision model
+        self.reused = 0                        # answers used again for the same shot
+        self._last = None                      # (time, picture vector, answer) of the last question
 
     def nudenet(self, frame):
         """-> 'nudity' / 'hint' (covered private parts: worth asking the model) / 'clear'"""
@@ -154,7 +167,7 @@ class Detector:
         return "nudity" if labels & NUDE_LABELS else "hint" if labels & HINT_LABELS else "clear"
 
     def clip(self, frame):
-        """How much the frame looks like something to cover (0..1), from CLIP (~0.1 s on the processor)."""
+        """-> (how much the frame looks like something to cover (0..1), its picture vector), from CLIP (~0.1 s)."""
         import torch
         if self._clip is None:
             os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
@@ -170,16 +183,31 @@ class Detector:
             im = _features(m.get_image_features(**proc(images=frame, return_tensors="pt")))
             im = im / im.norm(dim=-1, keepdim=True)
             probs = (100.0 * im @ text.T).softmax(dim=-1)[0]
-        return float(probs[:len(CLIP_COVER)].sum())
+        return float(probs[:len(CLIP_COVER)].sum()), im[0].numpy()
 
-    def ask(self, frame):
-        """The vision model's answer: True = cover. Unreachable model: False (NudeNet still works)."""
+    def ask(self, frame, t=None, vec=None):
+        """The vision model's answer: True = cover. Unreachable model: False (NudeNet still works).
+        t, vec (film time, CLIP vector): the same shot as the last question, seconds ago -> that answer again."""
         if not self.vlm_ok:
             return False
+        last = self._last
+        if (t is not None and vec is not None and last is not None and 0 <= t - last[0] <= SAME_SHOT_S
+                and float(np.dot(vec, last[1])) >= SAME_SHOT):
+            self.reused += 1
+            return last[2]
+        ans = self._ask(frame)
+        self.asked += 1
+        if t is not None and vec is not None:
+            self._last = (t, vec, ans)
+        return ans
+
+    def _ask(self, frame):
         import cv2
         ok, jpg = cv2.imencode(".jpg", frame[:, :, ::-1], [cv2.IMWRITE_JPEG_QUALITY, 85])
         body = {"model": self.model, "prompt": QUESTION, "images": [base64.b64encode(jpg.tobytes()).decode()],
                 "stream": False, "think": False, "keep_alive": "30m", "options": {"temperature": 0, "num_predict": 3}}
+        if self.gpu_layers is not None:
+            body["options"]["num_gpu"] = int(self.gpu_layers)
         try:
             req = urllib.request.Request(OLLAMA + "/api/generate", json.dumps(body).encode(),
                                          {"Content-Type": "application/json"})
@@ -197,7 +225,7 @@ class Detector:
 
     def warm_up(self):
         """Load the model now (the first answer takes ~45 s), so live checking starts on time."""
-        self.ask(np.zeros((H, W, 3), np.uint8))
+        self._ask(np.zeros((H, W, 3), np.uint8))
 
 
 class SceneScanner:
@@ -207,7 +235,7 @@ class SceneScanner:
     PAD = 5           # extra seconds covered before and after
 
     def __init__(self, url, headers, ffmpeg, duration, out_path=None, start=0.0, covers=None, log=print,
-                 model=MODEL, alts=()):
+                 model=MODEL, alts=(), gpu_layers=GPU_LAYERS, scanned=None):
         self.url, self.headers, self.ffmpeg = url, dict(headers or {}), ffmpeg
         self.duration = float(duration or 0)
         self.out_path = out_path
@@ -224,15 +252,78 @@ class SceneScanner:
         self._stop = False
         self._lock = threading.Lock()
         self.thread = None
+        self.ready = False                     # the models are loaded (the first minute is loading them)
         self.scan_url = None                   # the (small) picture actually read for checking
         self.alts = list(alts or [])
+        self.gpu_layers = gpu_layers
+        # the parts already checked: closed ranges, and the one being checked now [cur_from, scanned_to]
+        self.ranges = [list(r) for r in (scanned or [])]
+        self.cur_from = self.start
+        self.pos = self.start                  # where the player is (it reports it)
+        self._jump = None                      # the player skipped: check from here instead
+        self._speed = collections.deque(maxlen=400)   # (wall time, scanned_to) of the current range
 
     # ---- what the players read
+    def scanned(self):
+        """The checked parts of the film, merged: [[from, to], ...]."""
+        return merge(self.ranges + [[self.cur_from, self.scanned_to]])
+
+    def ahead_of(self, t):
+        """How far the checked part reaches from t on (the end of the checked range t is in), or None."""
+        for a, b in self.scanned():
+            if a - 0.5 <= t <= b:
+                return b
+        return None
+
+    def rate(self):
+        """How fast the check goes, in seconds of film per second (measured over the last minute), or None."""
+        sp = list(self._speed)
+        if len(sp) < 2:
+            return None
+        now = sp[-1][0]
+        old = next((x for x in sp if now - x[0] <= 60), sp[0])
+        if now - old[0] < 20:
+            return None
+        return (sp[-1][1] - old[1]) / (now - old[0])
+
+    def need_ahead(self, t):
+        """How far ahead of playback (seconds) the check must be so that playback never has to wait for it."""
+        r = self.rate()
+        left = max(0.0, (self.duration or t + 3600) - t)
+        if r is None:
+            return min(left, 60.0)
+        r *= 0.9                               # a little margin: busy scenes are checked more slowly
+        if r >= 1.0:
+            return min(left, 45.0)
+        return min(left, left * (1.0 - r) + 40.0 * r)
+
+    def follow(self, t):
+        """The player is at t (seconds). If it skipped to a part not checked, checking moves there."""
+        self.pos = t
+        if self.done:
+            return
+        with self._lock:
+            if self.cur_from - 1 <= t <= self.scanned_to + 30 or self._jump is not None:
+                return
+            end = self.ahead_of(t)
+            if end is not None:
+                # checked already (earlier): carry on where that part ends, once playback gets near it
+                if end - t > 150 or self.cur_from <= end <= self.scanned_to + 1:
+                    return
+                self._jump = end
+            else:
+                self._jump = max(0.0, t - 3)
+        self.log(f"scenes: the player is at {fmt(t)}: checking from {fmt(self._jump)}")
+
     def state(self):
         with self._lock:
             cov = [list(c) for c in self.covers] + ([list(self.live)] if self.live else [])
-            return {"covers": merge(cov), "scanned_to": round(self.scanned_to, 1), "done": self.done, "error": self.error,
-                    "said": list(self.said)}
+            end = self.ahead_of(self.pos)
+            rate = self.rate()
+            return {"covers": merge(cov), "scanned_to": round(end if end is not None else self.scanned_to, 1),
+                    "scanned": self.scanned(), "done": self.done, "error": self.error,
+                    "said": list(self.said), "rate": round(rate, 2) if rate is not None else None,
+                    "need": round(self.need_ahead(self.pos), 1)}
 
     def add_said(self, lines):
         with self._lock:
@@ -257,6 +348,20 @@ class SceneScanner:
         self._stop = True
 
     # ---- reading the picture, one frame per second, in memory only
+    def _next_start(self):
+        """Where to check next: the first part not checked from the player on, else from the beginning."""
+        gaps, prev = [], 0.0
+        for a, b in self.scanned():
+            if a - prev > 2:
+                gaps.append((prev, a))
+            prev = max(prev, b)
+        if not self.duration or self.duration - prev > 2:
+            gaps.append((prev, self.duration or prev + 1e9))
+        for a, b in gaps:
+            if b > self.pos:
+                return max(a, min(self.pos, b - 2))
+        return gaps[0][0] if gaps else None
+
     def _frames(self, at):
         cmd = [self.ffmpeg, "-hide_banner", "-loglevel", "error", "-nostdin"]
         if self.url.startswith(("http://", "https://")):
@@ -281,7 +386,7 @@ class SceneScanner:
         n = W * H * 3
         k = 0
         try:
-            while not self._stop:
+            while not self._stop and self._jump is None:
                 raw = proc.stdout.read(n)
                 if len(raw) < n:
                     break
@@ -290,43 +395,78 @@ class SceneScanner:
         finally:
             proc.kill()
 
-    def _cover(self, frame, nn=None):
-        nn = nn or self.det.nudenet(frame)
-        return nn == "nudity" or self.det.ask(frame)
+    def _cover(self, frame, t=None):
+        if self.det.nudenet(frame) == "nudity":
+            return True
+        c, vec = self.det.clip(frame)
+        return self.det.ask(frame, t, vec)
 
     def _run(self):
         try:
-            self.det = Detector(self.model, self.log)
+            self.det = Detector(self.model, self.log, self.gpu_layers)
             self.det.warm_up()
+            self.ready = True
             if not self.det.vlm_ok:
                 self.log("scenes: Ollama is not running; only NudeNet checks (nudity only, no kissing)")
             tries = 0
-            while not self._stop and (not self.duration or self.scanned_to < self.duration - 2) and tries < 4:
+            nxt = self.start
+            while not self._stop and nxt is not None and tries < 4:
                 before = self.scanned_to
-                self._scan_from(self.scanned_to if self.scanned_to > self.start else self.start)
-                tries = tries + 1 if self.scanned_to - before < 5 else 0
+                self._scan_from(nxt)
+                with self._lock:
+                    jump, self._jump = self._jump, None
+                    if jump is not None or (self.duration and self.scanned_to >= self.duration - 2):
+                        # this part is finished (or the player skipped): keep it, start the next one
+                        self.ranges = merge(self.ranges + [[self.cur_from, self.scanned_to]])
+                        self.cur_from = self.scanned_to = jump if jump is not None else self.scanned_to
+                        self._speed.clear()
+                        tries = 0
+                    else:
+                        tries = tries + 1 if self.scanned_to - before < 5 else 0
+                if self._stop:
+                    break
+                nxt = jump if jump is not None else self._next_start()
+                if jump is None and nxt is not None and abs(nxt - self.scanned_to) > 2:
+                    with self._lock:
+                        self.ranges = merge(self.ranges + [[self.cur_from, self.scanned_to]])
+                        self.cur_from = self.scanned_to = nxt
+                        self._speed.clear()
             with self._lock:
                 if self.live:
                     self.covers.append([self.live[0], self.live[1]])
                     self.live = None
                 self.covers = merge(self.covers)
-                self.done = not self._stop and (not self.duration or self.scanned_to >= self.duration - 5)
+                self.ranges = merge(self.ranges + [[self.cur_from, self.scanned_to]])
+                self.done = not self._stop and self._next_start() is None
                 if not self.done and not self._stop:
                     self.error = "the picture stopped coming from the website"
-            self.log(f"scenes: checked up to {fmt(self.scanned_to)}; {len(self.covers)} part(s) to cover")
+            self.log(f"scenes: checked {self._summary()}; {len(self.covers)} part(s) to cover")
         except Exception as ex:
             self.error = repr(ex)[:200]
             self.log(f"scenes: stopped: {ex!r}")
         self.save()
 
+    def _summary(self):
+        d = self.det
+        r = self.rate()
+        return (" + ".join(f"{fmt(a)}-{fmt(b)}" for a, b in self.scanned())
+                + (f" | {r:.2f}x film speed" if r else "")
+                + (f" | vision model asked {d.asked} times, same-shot answer used {d.reused} times" if d else ""))
+
     def _scan_from(self, at):
         recent = collections.deque(maxlen=self.LOOKBACK)
+        next_report = at + 600
+        why = ""
+        # stop where an earlier checked part begins (or at the end of the film): never check anything twice
+        stop_at = min([r[0] for r in self.ranges if r[0] > at + 0.5] + [self.duration or 1e12])
         in_scene, clear_run, scene_start, last_pos = False, 0, 0.0, 0.0
         strong_run, strong_start, last_nude = 0, 0.0, None
         last_save = time.time()
         for t, frame in self._frames(at):
+            if t >= stop_at:
+                break
             nn = self.det.nudenet(frame)
-            c = self.det.clip(frame)
+            c, vec = self.det.clip(frame)
             strong_run = strong_run + 1 if c >= CLIP_STRONG else 0
             if strong_run == 1:
                 strong_start = t
@@ -335,23 +475,25 @@ class SceneScanner:
                 last_nude = t
             if in_scene:
                 # still going? a clear sign from the fast checks is enough; otherwise the vision model decides
-                pos = nn == "nudity" or c >= CLIP_SURE or self.det.ask(frame)
+                pos = nn == "nudity" or c >= CLIP_SURE or self.det.ask(frame, t, vec)
             elif nude_sure or strong_run >= CLIP_RUN:
                 pos = True                             # the fast checks are sure enough on their own
+                why = "NudeNet: nudity" if nude_sure else "CLIP very sure for 3 s"
             else:
                 ask = nn != "clear" or c >= CLIP_FLAG or int(t) % self.BACKSTOP == 0
-                pos = ask and self.det.ask(frame)
+                pos = ask and self.det.ask(frame, t, vec)
+                why = f"the vision model said yes (CLIP {c:.2f}, NudeNet {nn})"
             if not in_scene and pos:
                 first = strong_start if strong_run >= CLIP_RUN else t
                 for tb, fb in reversed(recent):        # where did it begin? (the seconds just before)
                     if tb >= first:
                         continue
-                    if self._cover(fb):
+                    if self._cover(fb, tb):
                         first = tb
                     else:
                         break
                 in_scene, scene_start, last_pos, clear_run = True, first, t, 0
-                self.log(f"scenes: something to cover at {fmt(first)}")
+                self.log(f"scenes: something to cover at {fmt(first)} ({why})")
             elif in_scene:
                 if pos:
                     last_pos, clear_run = t, 0
@@ -367,6 +509,10 @@ class SceneScanner:
                 if in_scene:                           # covered already while its end is still being found
                     self.live = [max(0.0, scene_start - self.PAD), t + self.PAD]
                 self.scanned_to = t
+                self._speed.append((time.time(), t))
+            if t >= next_report:
+                next_report = t + 600
+                self.log(f"scenes: {self._summary()}")
             recent.append((t, frame))
             if time.time() - last_save > 5:
                 last_save = time.time()

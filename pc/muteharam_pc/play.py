@@ -246,6 +246,11 @@ class TabletFront:
         self.audio_path = "/audio.wav"   # where the tablet gets the cleaned sound
         self.resume_key = None           # which film, for remembering where it was left (see resume_key)
         self.scenes = None               # -> {"covers": [[s, e]...], "scanned_to", "done"} (Lowering the gaze)
+        self.scanner = None              # the live scene check (it follows the player when it skips)
+        self.captions = None             # MuteHaram's own subtitles (captions.Captioner, or a finished list)
+        self.steps = list(TABLET_STEPS)
+        self.progress = None             # 0..1 within the current step, if known
+        self.eta_s = None                # seconds this step still takes, if known
         self.duration = 0.0
         self._pos_saved = 0.0
 
@@ -260,7 +265,12 @@ class TabletFront:
     # ---- progress
     def stage(self, text):
         self.text = text
+        self.progress = self.eta_s = None
         self.log(f"[tablet] {text}")
+
+    def step_progress(self, progress, eta_s=None):
+        self.progress = None if progress is None else max(0.0, min(1.0, progress))
+        self.eta_s = None if eta_s is None else max(0, int(eta_s))
 
     def fail(self, text):
         self.failed = True
@@ -273,6 +283,10 @@ class TabletFront:
         """/level?l=auto|normal|strong|strongest&pos=<ms> : clean again from there, as strict as asked; answers
         once the sound at that point is ready (the tablet then reloads its sound)."""
         return set_strength(self.hub, q, self.log)
+
+    def subs_route(self, q):
+        """/subs?m=site|own|off : which subtitles; own = MuteHaram makes them for the whole film (remembered)."""
+        return set_subtitles(self.captions, q, self.log)
 
     def session_json(self, q):
         # where the tablet is in the film (saved now and then: the next "Send to the tablet" carries on there)
@@ -287,9 +301,15 @@ class TabletFront:
         if diag and (key != getattr(self, "_diag_key", "") or time.time() - getattr(self, "_diag_t", 0) > 60):
             self._diag_key, self._diag_t = key, time.time()
             self.log(f"[tablet] {time.strftime('%H:%M:%S')} {diag}")
+        if pos.isdigit():
+            for who in (self.scanner, self.captions):
+                if who is not None and hasattr(who, "follow"):
+                    who.follow(int(pos) / 1000.0)
         if self.hub is None:
+            step = next((i + 1 for i, s in enumerate(self.steps) if self.text.startswith(s)), 0)
             return {"preparing": True, "failed": self.failed, "status": self.text,
-                    "elapsed_s": int(time.time() - self.t0)}
+                    "elapsed_s": int(time.time() - self.t0), "step": step, "steps": len(self.steps),
+                    "progress": self.progress, "eta_s": self.eta_s, "step_names": self.steps}
         doc = dict(self.doc, mode=self.hub.mode, age_s=int(time.time() - self.doc["id"] / 1000),
                    level=getattr(self.hub, "level", "normal"))
         if self.scenes is not None:
@@ -297,6 +317,12 @@ class TabletFront:
                 doc["scenes"] = self.scenes()
             except Exception:
                 pass
+        # MuteHaram's own subtitles: the ones the tablet does not have yet (it says how many it has)
+        doc["subtitles"] = S_SETTINGS().get("subtitles", "site")
+        if self.captions is not None:
+            k = (q.get("subs_from") or ["0"])[0]
+            n, lines = self.captions.lines_from(int(k) if k.isdigit() else 0)
+            doc["made"] = {"from": int(k) if k.isdigit() else 0, "n": n, "lines": lines[:400]}
         return doc
 
 
@@ -437,7 +463,7 @@ def run_preclean(a, r, session, problem, log):
         save(stage=f"checking scenes {scene_progress(scan, session.duration) * 100:.0f} %",
              scenes_progress=scene_progress(scan, session.duration))
         scan.thread.join(5)
-    caption_covers(os.path.join(out_dir, "scenes.json"), pcm_path, total, log, lambda text: save(stage=text))
+    caption_library(os.path.join(out_dir, "subs.json"), pcm_path, total, log, lambda text: save(stage=text))
     save(stage="saving")
     opus = os.path.join(out_dir, "audio.opus")
     res = subprocess.run([cfg["ffmpeg"], "-y", "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", str(SAMPLE_RATE),
@@ -461,36 +487,88 @@ def start_scene_scan(url, headers, duration, path, cfg, log, start=0.0, alts=())
     if old.get("done"):
         return None
     try:
-        return scenes.SceneScanner(url, headers, cfg["ffmpeg"], duration, out_path=path,
-                                   start=max(start, float(old.get("scanned_to") or 0)), covers=old.get("covers"),
-                                   log=log, model=S_SETTINGS().get("scenes_model", scenes.MODEL), alts=alts).begin()
+        S = S_SETTINGS()
+        first = start if old.get("scanned") else max(start, float(old.get("scanned_to") or 0))
+        return scenes.SceneScanner(url, headers, cfg["ffmpeg"], duration, out_path=path, start=first,
+                                   covers=old.get("covers"), scanned=old.get("scanned"), log=log,
+                                   model=S.get("scenes_model", scenes.MODEL), alts=alts,
+                                   gpu_layers=S.get("scenes_gpu_layers", scenes.GPU_LAYERS)).begin()
     except Exception as ex:
         log(f"scenes: could not start the picture check: {ex!r}")
         return None
 
 
-def caption_covers(scenes_path, pcm_path, total_frames, log, stage=lambda t: None):
-    """Library film: subtitles for its covered parts, from the cleaned sound (pcm: int16 stereo, 44.1 kHz)."""
-    from . import scenes
-    sc = scenes.load(scenes_path)
-    if not sc.get("covers") or sc.get("said") is not None and sc.get("said_done"):
+def caption_library(subs_path, pcm_path, total_frames, log, stage=lambda t: None):
+    """Library film: MuteHaram's own subtitles for the whole film, from the cleaned sound (pcm: int16 stereo,
+    44.1 kHz) -> subs.json {"lines": [[start, end, text], ...], "done": true} (shown when chosen, and while covered)."""
+    from .library import write_json
+    old = {}
+    try:
+        old = json.load(open(subs_path, encoding="utf-8"))
+    except Exception:
+        pass
+    if old.get("done"):
         return
     try:
-        from .captions import to_16k_mono, transcribe
+        from .captions import caption_file
         pcm = np.memmap(pcm_path, dtype=np.int16, mode="r").reshape(-1, 2)
-        said = []
-        for k, (s, e) in enumerate(sc["covers"]):
-            stage(f"writing subtitles for the covered parts ({k + 1}/{len(sc['covers'])})")
-            f0, f1 = int(s * SAMPLE_RATE), min(int(e * SAMPLE_RATE), len(pcm), total_frames)
-            if f1 > f0:
-                said += transcribe(to_16k_mono(np.array(pcm[f0:f1])), s)
-        del pcm
-        from .library import write_json
-        sc.update(said=said, said_done=True)
-        write_json(scenes_path, sc)
-        log(f"captions: {len(said)} line(s) for {len(sc['covers'])} covered part(s)")
+        n = min(len(pcm), total_frames)
+        total_s = n / SAMPLE_RATE
+
+        def read(s, d):
+            return np.array(pcm[int(s * SAMPLE_RATE):min(n, int((s + d) * SAMPLE_RATE))])
+        lines = caption_file(read, total_s, S_SETTINGS().get("subtitles_lang", "en"), log,
+                             lambda done, tot: stage(f"writing subtitles {done / tot * 100:.0f} %"))
+        write_json(subs_path, {"lines": lines, "done": True})
+        log(f"captions: {len(lines)} subtitle line(s) for the whole film")
     except Exception as ex:
         log(f"captions: could not write them ({ex!r})")
+
+
+class SavedCaptions:
+    """A library film's finished subtitles (subs.json), served like a live Captioner's."""
+
+    def __init__(self, path):
+        self.lines = []
+        try:
+            self.lines = json.load(open(path, encoding="utf-8")).get("lines") or []
+        except Exception:
+            pass
+
+    def lines_from(self, k):
+        return len(self.lines), self.lines[k:]
+
+
+def set_subtitles(captions, q, log):
+    """Which subtitles: site / own / off. own: MuteHaram makes them for the whole film (live: from here on)."""
+    m = (q.get("m") or [""])[0]
+    if m not in ("site", "own", "off"):
+        return {"ok": False, "error": "unknown choice"}
+    try:
+        config.save_setting("subtitles", m)
+    except Exception:
+        pass
+    if captions is not None and hasattr(captions, "set_full"):
+        captions.set_full(m == "own")
+    log(f"subtitles: {m}")
+    return {"ok": True, "subtitles": m}
+
+
+def start_captions(session_ref, scan, duration, log, out_path=None):
+    """Live: MuteHaram's own subtitles (the covered parts; the whole film when chosen). session_ref() -> the
+    current session / hub (cleaned sound), its .src the original."""
+    from .captions import Captioner
+
+    def clean(s, d):
+        return session_ref().peek_frames(int(s * SAMPLE_RATE), int((s + d) * SAMPLE_RATE))
+
+    def src(s, d):
+        cur = session_ref()
+        cur = getattr(cur, "cur", cur)
+        return cur.src.read_s16(s, d)
+    S = S_SETTINGS()
+    return Captioner(duration, clean, src, scanner=scan, full=S.get("subtitles") == "own",
+                     lang=S.get("subtitles_lang", "en"), log=log, out_path=out_path)
 
 
 def set_strength(hub, q, log):
@@ -513,6 +591,37 @@ def set_strength(hub, q, log):
     return {"ok": True, "level": level}
 
 
+def subs_args(path, port):
+    """mpv: MuteHaram's own subtitles (mpv_subs.lua draws them, film-style; C switches site / own / off)."""
+    out = [f"--script={os.path.join(HERE, 'mpv_subs.lua')}",
+           f"--script-opts-append=muteharam-subs={mpv_list_value(path)}",
+           f"--script-opts-append=muteharam-subs-mode={S_SETTINGS().get('subtitles', 'site')}"]
+    if port:
+        out.append(f"--script-opts-append=muteharam-subs-port={port}")
+    return out
+
+
+def cover_logo():
+    """The logo as small raw pictures for the PC player's cover (mpv shows raw BGRA, premultiplied):
+    <temp>/muteharam-logo-<size>.bgra; -> the common start of their names, or "" if it can't be made."""
+    import tempfile
+    base = os.path.join(tempfile.gettempdir(), "muteharam-logo")
+    try:
+        from PIL import Image
+        src = Image.open(os.path.join(config.PC_DIR, "assets", "logo.png")).convert("RGBA")
+        for n in (48, 64, 80, 100, 128, 160):
+            out = f"{base}-{n}.bgra"
+            if os.path.exists(out):
+                continue
+            px = np.asarray(src.resize((n, n), Image.LANCZOS), np.float32)
+            a = px[:, :, 3:4] / 255.0
+            bgra = np.concatenate([px[:, :, 2::-1] * a, px[:, :, 3:4]], axis=2)
+            np.round(bgra).astype(np.uint8).tofile(out)
+        return base
+    except Exception:
+        return ""
+
+
 def scene_args(path):
     """mpv options for Lowering the gaze (mpv_scenes.lua covers the listed parts; G turns it on / off)."""
     if not path or not S_SETTINGS().get("scenes", True):
@@ -520,6 +629,7 @@ def scene_args(path):
     on = "yes" if S_SETTINGS().get("scenes_cover", True) else "no"
     return [f"--script={os.path.join(HERE, 'mpv_scenes.lua')}",
             f"--script-opts-append=muteharam-scenes={mpv_list_value(path)}",
+            f"--script-opts-append=muteharam-logo={mpv_list_value(cover_logo())}",
             f"--script-opts-append=muteharam-on={on}"]
 
 
@@ -572,6 +682,8 @@ def run_library(a, S, log):
         FORCE_DIRECT.update([a.url, prog["picture"]])
     if a.tablet:
         front, srv = start_tablet_front(a, log)
+        front.steps = ["Opening the cleaned sound", "Finding the picture and the captions",
+                       "Cleaning the first seconds of sound"]
         front.stage("Opening the cleaned sound")
         # the website's list of picture qualities for this film, so the tablet picks one its Wi-Fi can carry
         # (one fixed quality, often 1080p, kept running dry: a pause every 20-45 s)
@@ -591,9 +703,12 @@ def run_library(a, S, log):
         if os.path.exists(scenes_file):
             from . import scenes
             front.scenes = lambda: scenes.load(scenes_file)
+        if os.path.exists(os.path.join(a.library, "subs.json")):
+            front.captions = SavedCaptions(os.path.join(a.library, "subs.json"))
         return run_tablet(a, cfg, r, notes, sess, None, r["headers"], log, front, srv)
     cmd = [cfg["mpv"], r["mpv_url"], f"--audio-file={audio}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}",
-           f"--script={os.path.join(HERE, 'mpv_pip.lua')}"] + scene_args(os.path.join(a.library, "scenes.json"))
+           f"--script={os.path.join(HERE, 'mpv_pip.lua')}"] + scene_args(os.path.join(a.library, "scenes.json")) \
+        + subs_args(os.path.join(a.library, "subs.json"), None)
     if S["ontop"] and not a.pip:
         cmd += ["--ontop"]
     if a.pip:
@@ -623,7 +738,8 @@ def start_tablet_front(a, log):
     for attempt in range(10):                   # the port of a session that was just stopped may need a moment
         try:
             srv = make_server(front, host="0.0.0.0", port=a.tablet_port, token=load_or_create_token(),
-                              routes={"/session.json": front.session_json, "/level": front.level_route})
+                              routes={"/session.json": front.session_json, "/level": front.level_route,
+                                      "/subs": front.subs_route})
             break
         except OSError:
             if attempt == 9:
@@ -675,11 +791,11 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
             a.start = max(0.0, at - 5)
             log(f"[tablet] carrying on from {int(a.start // 60)}:{int(a.start % 60):02d}, where it was left last time")
     # live: the picture check gets a head start (it then keeps ahead; the tablet waits if playback catches up)
-    if front.scenes is not None and not front.scenes().get("done"):
-        front.stage("Checking the first scenes")
-        t0 = time.time()
-        while time.time() - t0 < 150 and front.scenes().get("scanned_to", 0) < a.start + 45 and not front.scenes().get("error"):
-            time.sleep(1)
+    if front.scanner is not None:
+        front.scanner.follow(max(0.0, a.start))
+    if front.scanner is not None and not front.scanner.done:
+        front.stage("Checking the scenes ahead")
+        wait_for_scenes(front.scanner, max(0.0, a.start), front, log)
     # the film only starts on the tablet once its first seconds are cleaned: no original sound (music) at the start
     front.stage("Cleaning the first seconds of sound")
     if not session.prepare(at_frame=int(max(0.0, a.start) * SAMPLE_RATE), timeout=240):
@@ -698,6 +814,37 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
         pass
     finally:
         hub.close()
+
+
+TABLET_STEPS = ("Opening the film on the PC", "Loading the cleaning model and opening the sound",
+                "Finding the picture and the captions", "Checking the scenes ahead", "Cleaning the first seconds of sound")
+
+
+def wait_for_scenes(scan, start, front, log, limit_s=15 * 60):
+    """Before playing: let the scene check get far enough ahead that playback never has to wait for it later.
+    How far depends on how fast it goes (measured): faster than the film -> 45 s; slower -> enough for the rest."""
+    t0 = time.time()
+    progress = front.step_progress
+    if not scan.ready:
+        front.stage("Checking the scenes ahead: loading the picture models (about a minute)")
+        while not scan.ready and not scan.error and scan.thread.is_alive() and time.time() - t0 < 300:
+            progress(min(0.95, (time.time() - t0) / 60.0), max(1, 60 - (time.time() - t0)))
+            time.sleep(1)
+        front.stage("Checking the scenes ahead")
+    while not scan.done and not scan.error:
+        st = scan.state()
+        ahead = st["scanned_to"] - start
+        need, rate = st["need"], st["rate"]
+        if rate is not None and ahead >= need:
+            break
+        eta = (need - ahead) / rate if rate else None
+        progress(ahead / need if need > 0 else 1.0, eta)
+        if time.time() - t0 > limit_s:
+            log(f"[tablet] the scene check is slow ({rate}x film speed): starting anyway (it may pause later)")
+            break
+        time.sleep(1)
+    log(f"[tablet] scene check ahead by {scan.state()['scanned_to'] - start:.0f} s "
+        f"(needs {scan.state()['need']:.0f} s at {scan.state()['rate']}x film speed) after {time.time() - t0:.0f} s")
 
 
 ACTIVE_FRONT = None        # the tablet's progress server, while "Send to the tablet" is being prepared
@@ -806,6 +953,15 @@ def run(argv=None):
     problem = None
     audio_url = None
 
+    # the graphics card is shared by the music removal, the subtitles (Cohere) and the scene check (Ollama):
+    # PyTorch would otherwise keep up to 7 GB of it for itself and slow the others down (measured)
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.set_per_process_memory_fraction(0.6)
+    except Exception:
+        pass
+
     def build(rr):
         """Open the media for the AI and check that audio can really be decoded."""
         src = MediaSource(rr["media_url"], rr["headers"], cfg["ffmpeg"], cfg["ffprobe"])
@@ -887,6 +1043,8 @@ def run(argv=None):
     if a.preclean:
         return run_preclean(a, r, session, problem, log)
     live_scenes = None
+    current = {"s": session}               # the subtitles read the cleaned sound from whatever session is current
+    caps = None
     if session is not None and session.duration:
         import tempfile
         live_scenes = os.path.join(tempfile.gettempdir(), f"muteharam-scenes-{os.getpid()}.json")
@@ -894,21 +1052,36 @@ def run(argv=None):
                                 live_scenes, cfg, log, start=max(0.0, a.start), alts=list(a.alt or []))
         if scan is None:
             live_scenes = None
-        else:
-            try:
-                from .captions import CoverCaptioner
-                src_audio = session.src
-                CoverCaptioner(scan, lambda s, d: src_audio.read_s16(s, d), log)
-            except Exception as ex:
-                log(f"captions: not available ({ex!r})")
+        elif a.tablet:
+            front.scenes = scan.state
+            front.scanner = scan
+    if session is not None and session.duration:
+        import tempfile
+        live_subs = os.path.join(tempfile.gettempdir(), f"muteharam-subs-{os.getpid()}.json")
+        try:
+            caps = start_captions(lambda: current["s"], scan if live_scenes else None, session.duration, log,
+                                  None if a.tablet else live_subs)
             if a.tablet:
-                front.scenes = scan.state
+                front.captions = caps
+        except Exception as ex:
+            caps = None
+            log(f"captions: not available ({ex!r})")
     if a.tablet:
         return run_tablet(a, cfg, r, notes, session, problem, headers, log, front, tablet_srv)
     if session is not None:
         hub = SessionHub(session, session.remake)
         session = hub                      # closing later closes whichever session is current
-        srv = make_server(hub, routes={"/level": lambda q: set_strength(hub, q, log)})
+        current["s"] = hub
+
+        def scene_pos(q):
+            t = (q.get("t") or [""])[0]
+            if t.replace(".", "", 1).isdigit():
+                for who in (scan if live_scenes else None, caps):
+                    if who is not None:
+                        who.follow(float(t))
+            return {"ok": True}
+        srv = make_server(hub, routes={"/level": lambda q: set_strength(hub, q, log),
+                                       "/subs": lambda q: set_subtitles(caps, q, log), "/pos": scene_pos})
         audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"
         log("cleaned audio at", audio_url)
     if a.no_player:
@@ -938,6 +1111,8 @@ def run(argv=None):
     cmd += [f"--script={os.path.join(HERE, 'mpv_pip.lua')}"]
     if live_scenes:
         cmd += scene_args(live_scenes)
+    if caps is not None and problem is None:
+        cmd += subs_args(live_subs, srv.server_address[1])
     if S["ontop"] and not a.pip:
         cmd += ["--ontop"]                 # stays in front of other programs (press T in the player to turn it off)
     if a.pip:

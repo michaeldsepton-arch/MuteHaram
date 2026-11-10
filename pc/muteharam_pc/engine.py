@@ -322,6 +322,18 @@ class Session:
                 self.cv.wait(0.5)
         return self.store[b * self.hop:(b + 1) * self.hop]
 
+    def peek_frames(self, f0, f1):
+        """Cleaned frames [f0, f1) if they are all cleaned already, else None. Never waits, never changes which
+        part is cleaned next (the subtitles use it)."""
+        f1 = min(f1, self.total_frames)
+        if f1 <= f0:
+            return None
+        b0, b1 = f0 // self.hop, (f1 - 1) // self.hop
+        with self.cv:
+            if not (self.ready[b0:b1 + 1].all() and not self.bad[b0:b1 + 1].any()):
+                return None
+            return np.array(self.store[f0:f1])
+
     def read_frames(self, f0, f1):
         """Cleaned int16 stereo frames [f0, f1). If the AI can't deliver in time (slow computer, network trouble,
         engine error) that stretch is SILENT (fallback="silence", the default: never let the music through) or the
@@ -665,6 +677,9 @@ class SessionHub:
     @property
     def mode(self):
         return self.cur.mode
+
+    def peek_frames(self, f0, f1):
+        return self.cur.peek_frames(f0, f1) if hasattr(self.cur, "peek_frames") else None
 
     def read_frames(self, f0, f1):
         for _ in range(4):
