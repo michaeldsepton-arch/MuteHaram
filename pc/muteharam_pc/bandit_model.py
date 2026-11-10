@@ -70,11 +70,16 @@ def separate(model, device, x44, stems=("music",)):
     """x44: [n, 2] float32 at 44.1 kHz -> {stem: [n, 2] float32 at 44.1 kHz}. Left and right are separated on their own."""
     n = len(x44)
     x48 = _resample(x44, 160, 147)                                       # 44.1 -> 48 kHz
-    t = torch.from_numpy(np.ascontiguousarray(x48.T)).to(device)[:, None, :]    # [2, 1, T]
-    out = model({"mixture": {"audio": t}})["estimates"]
+    # one channel at a time: half the graphics memory (it is shared with the subtitles and the scene check)
+    parts = []
+    for ch in range(x48.shape[1]):
+        t = torch.from_numpy(np.ascontiguousarray(x48[:, ch]))[None, None, :].to(device)     # [1, 1, T]
+        out = model({"mixture": {"audio": t}})["estimates"]
+        parts.append({s: out[s]["audio"].float().cpu().numpy()[0, 0, :] for s in stems})
+        del out, t
     res = {}
     for s in stems:
-        e = out[s]["audio"].float().cpu().numpy()[:, 0, :].T            # [T, 2]
+        e = np.stack([p[s] for p in parts], axis=1)                     # [T, 2]
         e = _resample(e, 147, 160)                                       # 48 -> 44.1 kHz
         if len(e) < n:
             e = np.pad(e, ((0, n - len(e)), (0, 0)))

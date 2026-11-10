@@ -562,13 +562,16 @@ def start_captions(session_ref, scan, duration, log, out_path=None):
     def clean(s, d):
         return session_ref().peek_frames(int(s * SAMPLE_RATE), int((s + d) * SAMPLE_RATE))
 
-    def src(s, d):
+    def bad(s, d):
         cur = session_ref()
         cur = getattr(cur, "cur", cur)
-        return cur.src.read_s16(s, d)
+        b0, b1 = int(s * SAMPLE_RATE) // cur.hop, int((s + d) * SAMPLE_RATE - 1) // cur.hop
+        return bool((cur.ready[b0:b1 + 1] & cur.bad[b0:b1 + 1]).any())
     S = S_SETTINGS()
-    return Captioner(duration, clean, src, scanner=scan, full=S.get("subtitles") == "own",
-                     lang=S.get("subtitles_lang", "en"), log=log, out_path=out_path)
+    cap = Captioner(duration, clean, None, scanner=scan, full=S.get("subtitles") == "own",
+                    lang=S.get("subtitles_lang", "en"), log=log, out_path=out_path)
+    cap.is_bad = lambda a, b: bad(a, b - a)
+    return cap
 
 
 def set_strength(hub, q, log):

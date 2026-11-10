@@ -183,6 +183,7 @@ class Captioner:
                  out_path=None):
         self.duration = float(duration or 0)
         self.read_clean, self.read_src = read_clean, read_src
+        self.is_bad = None                       # is_bad(a, b) -> True if the engine gave up on part of it
         self.scan = scanner
         self.full = full
         self.lang = lang
@@ -238,6 +239,13 @@ class Captioner:
                 return a, min(self.duration or a + self.CHUNK, a + self.CHUNK), False
         return None
 
+    def _unclean(self, a, b):
+        """The stretch includes a part the engine marked as not cleanable (it will never be ready)."""
+        try:
+            return bool(self.is_bad(a, b)) if self.is_bad else False
+        except Exception:
+            return False
+
     def _run(self):
         with _lock:
             _load(self.log)                      # ready before the film starts (loading takes up to a minute)
@@ -250,12 +258,13 @@ class Captioner:
                 a, b, cover = job
                 audio = self.read_clean(a, b - a) if self.read_clean else None
                 if audio is None:
-                    # not cleaned yet: wait for it, unless the player is nearly there (or it is far ahead: a cover)
-                    if self.read_src is not None and (a - self.pos < 20 or (cover and a - self.pos > 120)):
-                        audio = self.read_src(a, b - a)
-                    else:
-                        time.sleep(1)
-                        continue
+                    # only ever from the CLEANED sound (the original has the music: its songs would become
+                    # subtitles); a part that could not be cleaned gets none
+                    if self.read_clean is not None and self._unclean(a, b):
+                        with self._lock:
+                            self.done = merge_ranges(self.done + [[a, b]])
+                    time.sleep(1)
+                    continue
                 x = to_16k_mono(audio)
                 got = transcribe(x, a, self.lang, self.log)
                 # a piece cut off by the end of this stretch is done with the next one (unless the film ends here)

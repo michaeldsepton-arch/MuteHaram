@@ -607,13 +607,17 @@ class Session:
         level = self.level
         try:
             if level in ("strong", "strongest"):
-                return self._bandit_level(x, c, level == "strongest")
+                st = self._bandit_safe(x)
+                if st is not None:
+                    y = st["speech"][c] if level == "strongest" else (st["speech"] + st["sfx"])[c]
+                    return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
+                return (np.clip(self._tiger(x, c), -1.0, 1.0) * 32767.0).astype(np.int16)
             y = self._tiger(x, c)
             if level == "auto":
                 score = _detector(self.device)
                 heard = score(y)
-                if heard >= AUTO_MUSIC:
-                    st = self._bandit_stems(x)
+                st = self._bandit_safe(x) if heard >= AUTO_MUSIC else None
+                if st is not None:
                     y2 = (st["speech"] + st["sfx"])[c]
                     heard2 = score(y2)
                     y = y2 if heard2 < AUTO_MUSIC else st["speech"][c]
@@ -630,6 +634,22 @@ class Session:
             self.level = "normal"
             y = self._tiger(x, c)
             return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
+
+    def _bandit_safe(self, x):
+        """Bandit's speech and effects, or None if the graphics card has no room for it right now (it is shared with
+        the subtitles and the scene check): then the normal cleaning is kept. Never silence because of this."""
+        for attempt in range(2):
+            try:
+                return self._bandit_stems(x)
+            except torch.OutOfMemoryError:
+                torch.cuda.empty_cache()
+                if attempt == 0:
+                    time.sleep(0.5)
+        self.short_of_memory = getattr(self, "short_of_memory", 0) + 1
+        if self.short_of_memory <= 5 or self.short_of_memory % 50 == 0:
+            self.log(f"engine: no graphics memory free for the stronger cleaning here; the normal cleaning is kept "
+                     f"({self.short_of_memory} block(s) so far)")
+        return None
 
     def _bandit_stems(self, x):
         from . import bandit_model
