@@ -84,6 +84,8 @@ def _cohere_texts(clips, lang):
 def split_lines(text, start, end):
     """One spoken piece -> subtitles of at most two lines of ~42 letters, timed by their share of the letters."""
     text = " ".join(text.split())
+    # the model sometimes runs two sentences together ("pocket.the problem"): a space and a capital after the stop
+    text = re.sub(r"([a-z]{2}[.!?])([a-zA-Z])", lambda m: m.group(1) + " " + m.group(2).upper(), text)
     if not text:
         return []
     if len(text) <= 2 * LINE:
