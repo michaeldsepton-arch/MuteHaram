@@ -290,11 +290,24 @@ class MainActivity : AppCompatActivity() {
 
     /** Next strictness: the PC cleans again from here, then the film restarts at the same spot with that sound. */
     private fun changeLevel() {
+        if (player == null || current == null || levelBusy) return
+        val keys = arrayOf("auto", "normal", "strong", "strongest")
+        val labels = arrayOf("Auto  (as strict as each part needs)", "Normal  (music out; voices and effects stay)",
+            "Strong  (a second model takes the music out)", "Strongest  (speech only)")
+        AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+            .setTitle("Music removal")
+            .setSingleChoiceItems(labels, keys.indexOf(pcLevel).coerceAtLeast(0)) { d, which ->
+                d.dismiss()
+                if (keys[which] != pcLevel) setLevel(keys[which])
+            }
+            .show()
+    }
+
+    /** The PC cleans again from here at the chosen strictness, then the film restarts at the same spot. */
+    private fun setLevel(want: String) {
         val p = player ?: return
         val s = current ?: return
         if (levelBusy) return
-        val order = listOf("auto", "normal", "strong", "strongest")
-        val want = order[(order.indexOf(pcLevel).coerceAtLeast(0) + 1) % order.size]
         val pos = p.currentPosition
         levelBusy = true
         p.pause()
