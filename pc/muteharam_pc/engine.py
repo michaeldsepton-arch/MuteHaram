@@ -203,6 +203,7 @@ class MediaSource:
 LEVELS = ("auto", "normal", "strong", "strongest")
 # the detector's "Music" score above which music is still heard (clean dialogue scores 0.01-0.03; measured)
 AUTO_MUSIC = 0.15
+VOICE_KEEP = 0.15         # a voice this clear after the normal cleaning must still be there after a stricter one
 _EXTRA = {}
 
 
@@ -213,24 +214,36 @@ def _bandit():
     return _EXTRA["bandit"]
 
 
-def _detector(device):
-    """-> score(x44 [n, 2] float) -> how much the detector hears "Music" (0..1)."""
-    if "ast" not in _EXTRA:
-        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-        from transformers import ASTFeatureExtractor, ASTForAudioClassification
-        from scipy.signal import resample_poly
-        name = "MIT/ast-finetuned-audioset-10-10-0.4593"
-        model = ASTForAudioClassification.from_pretrained(name, use_safetensors=True).eval().to(device)
-        fe = ASTFeatureExtractor.from_pretrained(name)
-        music = [i for i, l in model.config.id2label.items() if l == "Music"][0]
+_DETECTOR_LOCK = threading.Lock()
+# what counts as a voice for the detector (AudioSet): talking, and shouting, screaming, crying
+VOICE_LABELS = ("Speech", "Male speech, man speaking", "Female speech, woman speaking", "Child speech, kid speaking",
+                "Conversation", "Narration, monologue", "Babbling", "Shout", "Bellow", "Yell", "Battle cry",
+                "Children shouting", "Screaming", "Whispering", "Crying, sobbing", "Wail, moan")
 
-        @torch.no_grad()
-        def score(x):
-            m = resample_poly(np.asarray(x, np.float32).mean(axis=1), 160, 441).astype(np.float32)
-            inp = fe(m, sampling_rate=16000, return_tensors="pt").to(device)
-            return float(torch.sigmoid(model(**inp).logits)[0, music])
-        _EXTRA["ast"] = score
-    return _EXTRA["ast"]
+
+def _detector(device):
+    """-> score(x44 [n, 2] float) -> (how much the detector hears music, how much it hears a voice), each 0..1.
+    (Loaded under a lock: two threads importing from transformers at once failed with an ImportError.)"""
+    with _DETECTOR_LOCK:
+        if "ast" not in _EXTRA:
+            os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+            from transformers import ASTFeatureExtractor, ASTForAudioClassification
+            from scipy.signal import resample_poly
+            name = "MIT/ast-finetuned-audioset-10-10-0.4593"
+            model = ASTForAudioClassification.from_pretrained(name, use_safetensors=True).eval().to(device)
+            fe = ASTFeatureExtractor.from_pretrained(name)
+            labels = model.config.id2label
+            music = [i for i, l in labels.items() if l == "Music"][0]
+            voice = [i for i, l in labels.items() if l in VOICE_LABELS]
+
+            @torch.no_grad()
+            def score(x):
+                m = resample_poly(np.asarray(x, np.float32).mean(axis=1), 160, 441).astype(np.float32)
+                inp = fe(m, sampling_rate=16000, return_tensors="pt").to(device)
+                p = torch.sigmoid(model(**inp).logits)[0]
+                return float(p[music]), float(p[voice].max())
+            _EXTRA["ast"] = score
+        return _EXTRA["ast"]
 
 
 class Session:
@@ -615,23 +628,39 @@ class Session:
             y = self._tiger(x, c)
             if level == "auto":
                 score = _detector(self.device)
-                heard = score(y)
+                heard, voice = score(y)
                 st = self._bandit_safe(x) if heard >= AUTO_MUSIC else None
                 if st is not None:
-                    y2 = (st["speech"] + st["sfx"])[c]
-                    heard2 = score(y2)
-                    y = y2 if heard2 < AUTO_MUSIC else st["speech"][c]
+                    # (how clear the voice is: after the normal cleaning, or in the original if clearer there)
+                    voice = max(voice, score(x[c])[1])
+                    # the stricter result is used only if it keeps the voice: Bandit can take a voice that shouts
+                    # or screams over loud music for part of the music, and leave silence (measured: Young
+                    # Sherlock's opening, a woman shouting for help: voice 0.4-0.7 after the normal cleaning,
+                    # 0.02 after Bandit). Then the normal cleaning is kept: the voice matters more.
+                    pick, what = y, "normal kept (the stricter cleaning would remove a voice)"
+                    for name, cand in (("strong", (st["speech"] + st["sfx"])[c]), ("strongest (speech only)", st["speech"][c])):
+                        m2, v2 = score(cand)
+                        if voice >= VOICE_KEEP and v2 < voice * 0.6:
+                            continue                     # the voice would be lost
+                        pick, what = cand, name
+                        if m2 < AUTO_MUSIC:
+                            break
+                    y = pick
                     self.stepped_up += 1
                     if self.stepped_up <= 30 or self.stepped_up % 50 == 0:
-                        self.log(f"auto: music still heard ({heard:.2f}) -> {'strong' if heard2 < AUTO_MUSIC else 'strongest (speech only)'}"
+                        self.log(f"auto: music still heard ({heard:.2f}, voice {voice:.2f}) -> {what}"
                                  f" ({self.stepped_up} block(s) so far)")
+            self._level_fail = 0
             return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
         except (FileNotFoundError, ImportError, OSError) as ex:
-            # Bandit or the detector is not available: the standard cleaning, and say so once
-            if not getattr(self, "_level_warned", False):
-                self._level_warned = True
+            # Bandit or the detector is not available: the standard cleaning for this block; after 3 failures
+            # in a row for the rest of the film (one failure can be passing: the models were still loading)
+            self._level_fail = getattr(self, "_level_fail", 0) + 1
+            if self._level_fail >= 3:
                 self.log(f"engine: strength {level} not available ({ex}); using normal")
-            self.level = "normal"
+                self.level = "normal"
+            else:
+                self.log(f"engine: strength {level} not ready for this block ({ex}); normal cleaning for it")
             y = self._tiger(x, c)
             return (np.clip(y, -1.0, 1.0) * 32767.0).astype(np.int16)
 
