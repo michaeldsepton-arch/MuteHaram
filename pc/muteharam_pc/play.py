@@ -549,9 +549,19 @@ def set_subtitles(captions, q, log):
     except Exception:
         pass
     if captions is not None and hasattr(captions, "set_full"):
-        captions.set_full(m == "own")
+        # ("Website" when the site has no full subtitles for this film: MuteHaram's own are shown instead)
+        captions.set_full(m == "own" or (m == "site" and getattr(captions, "site_missing", False)))
     log(f"subtitles: {m}")
     return {"ok": True, "subtitles": m}
+
+
+def site_subs_full(url, cues, duration):
+    """Is a website's subtitle file the whole dialogue, or a 'forced' track (only signs and a few lines)?
+    Measured: Young Sherlock's forced track had 18 lines for 53 min; full ones have ~8-15 lines a minute."""
+    if "forced" in url.lower():
+        return False
+    minutes = (duration or 0) / 60.0
+    return cues >= max(30, 2 * minutes)
 
 
 def start_captions(session_ref, scan, duration, log, out_path=None):
@@ -774,16 +784,27 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
         u = sub["url"]
         if "thumbnail" in u.lower() or "sprite" in u.lower():
             continue
-        st, ct, data, _ = fetch_head(u, vheaders, nbytes=512)
+        st, ct, data, _ = fetch_head(u, vheaders, nbytes=4 * 1024 * 1024)
         text = data.lstrip(bytes([0xEF, 0xBB, 0xBF, 32, 13, 10]))
         # (subtitle services send SRT as plain text from addresses without .srt: known by its "-->" timings)
         is_caption = (text[:6] == b"WEBVTT" or b"-->" in text
                       or u.lower().split("?")[0].endswith((".srt", ".ass", ".ssa", ".ttml")))
         if st is not None and st < 400 and is_caption:
+            sub["full"] = site_subs_full(u, text.count(b"-->"), session.duration)
+            if not sub["full"]:
+                log(f"subtitles: the site's file has only {text.count(b'-->')} lines (a 'forced' track for a few "
+                    f"moments, not the whole dialogue): {u[:100]}")
             good.append(sub)
         else:
             log(f"skipping a caption file that does not load ({st}): {u[:100]}")
     subs = good
+    # no full subtitles from the site: with "Website" chosen, MuteHaram's own are shown for this film instead
+    front.site_full = any(x.get("full") for x in subs)
+    if not front.site_full and front.captions is not None:
+        front.captions.site_missing = True
+        if S_SETTINGS().get("subtitles", "site") == "site":
+            front.captions.set_full(True)
+            log("subtitles: the site has no full subtitles for this film; MuteHaram's own are made instead")
     hub = SessionHub(session, session.remake)
     # carry on where this film was left last time (the tablet reports where it is while it plays)
     front.resume_key = resume_key(a, session.duration)
@@ -805,7 +826,7 @@ def run_tablet(a, cfg, r, notes, session, problem, headers, log, front, srv):
         log("[tablet] the first seconds are taking long; starting anyway")
     doc = {"id": int(time.time() * 1000), "title": title or "", "video": video, "kind": kind,
            "headers": clean_headers(vheaders),
-           "subs": subs, "start": max(0.0, a.start), "duration": session.duration, "audio": front.audio_path}
+           "subs": subs, "site_subs_full": front.site_full, "start": max(0.0, a.start), "duration": session.duration, "audio": front.audio_path}
     front.ready(hub, doc)
     log(f"tablet session ready: {kind} picture, cleaned audio on port {a.tablet_port} "
         f"({int(time.time() - front.t0)} s after pressing Send)")
@@ -970,7 +991,7 @@ def run(argv=None):
         src = MediaSource(rr["media_url"], rr["headers"], cfg["ffmpeg"], cfg["ffprobe"])
         sess = Session(src, duration=rr["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
                        device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
-                       channels_mode=a.channels, mode=a.mode, level=S.get("strength", "auto"))
+                       channels_mode=a.channels, mode=a.mode, level=S.get("strength", "normal"))
         try:
             ok, why = src.probe(max(0.0, min(a.start, (rr["duration"] or 1e9) - 3)))
             if not ok:
@@ -1101,7 +1122,7 @@ def run(argv=None):
         cmd += [f"--audio-file={audio_url}", f"--script={os.path.join(HERE, 'mpv_select_audio.lua')}",
                 f"--script={os.path.join(HERE, 'mpv_strength.lua')}",
                 f"--script-opts-append=muteharam-level-port={srv.server_address[1]}",
-                f"--script-opts-append=muteharam-level={getattr(hub, 'level', 'auto')}"]
+                f"--script-opts-append=muteharam-level={getattr(hub, 'level', 'normal')}"]
     else:
         # The AI engine could not start (no GPU driver? model missing?): still play the video.
         why = " ".join(str(problem).split())[:160]

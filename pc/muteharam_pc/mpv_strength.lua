@@ -1,11 +1,11 @@
 -- MuteHaram: how strict the music removal is, while watching (live cleaning).
 --   L  cycles  Auto -> Normal -> Strong -> Strongest (speech only) -> Auto
--- Auto (the default) makes each part as strict as it needs: where music is still heard after the normal
+-- Normal is the default (it sounds best). Auto makes each part as strict as it needs: where music is still heard after the normal
 -- cleaning, that part is cleaned again more strictly (ahead of playback, nothing pauses).
 -- Choosing a level by hand cleans again from where you are: the film pauses for a few seconds until it is ready.
 local mp = require "mp"
 local port = mp.get_opt("muteharam-level-port")
-local level = mp.get_opt("muteharam-level") or "auto"
+local level = mp.get_opt("muteharam-level") or "normal"
 if not port then return end
 
 local names = {

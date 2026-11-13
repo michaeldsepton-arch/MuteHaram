@@ -342,6 +342,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun subsMode() = prefs.getString("subs", "site") ?: "site"
 
+    /** The subtitles actually shown: "Website" when the site has no full subtitles for this film (none, or only a
+     *  "forced" track with a few lines) shows MuteHaram's own instead. The choice itself stays "Website". */
+    private fun shownSubs(): String {
+        val m = subsMode()
+        return if (m == "site" && current?.siteSubsFull == false) "own" else m
+    }
+
     /** The Subtitles button: the website's / MuteHaram's own (the PC makes them for the whole film) / off. */
     private fun chooseSubs() {
         val keys = arrayOf("site", "own", "off")
@@ -363,11 +370,12 @@ class MainActivity : AppCompatActivity() {
     private fun applySubs() {
         val p = player
         val m = subsMode()
+        val shown = shownSubs()
         if (p != null) {
             p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, m != "site")
+                .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, shown != "site")
                 .build()
-            if (m != "own") {
+            if (shown != "own") {
                 shownSub = null
                 playerView.subtitleView?.setCues(emptyList())
             }
@@ -388,7 +396,7 @@ class MainActivity : AppCompatActivity() {
     /** MuteHaram's own subtitles, shown like a film's (the same look as the website's). */
     private fun showOwnSubs() {
         val p = player ?: return
-        if (subsMode() != "own" || covering) {
+        if (shownSubs() != "own" || covering) {
             if (shownSub != null) {
                 shownSub = null
                 playerView.subtitleView?.setCues(emptyList())
@@ -1158,7 +1166,8 @@ class MainActivity : AppCompatActivity() {
         levelButton.visibility = if (show && current != null && live) View.VISIBLE else View.GONE
         if (live) levelButton.text = "♪  Music removal: " + LEVEL_NAMES[pcLevel]
         subsButton.visibility = if (show && current != null) View.VISIBLE else View.GONE
-        subsButton.text = "CC  Subtitles: " + SUBS_NAMES[subsMode()]
+        subsButton.text = "CC  Subtitles: " + SUBS_NAMES[subsMode()] +
+            if (shownSubs() != subsMode()) " (none on the site: MuteHaram's)" else ""
         subsButton.background = pill(if (subsMode() == "off") 0xCC081A2B.toInt() else 0xCC15524F.toInt(),
             if (subsMode() == "off") TEAL_DIM else TEAL)
     }
@@ -1329,7 +1338,7 @@ class MainActivity : AppCompatActivity() {
             .setPreferredAudioMimeType(s.pcAudioMime)
             .build()
         p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
-            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, subsMode() != "site")
+            .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, shownSubs() != "site")
             .build()
         shownSub = null
         toldPcSubs = ""

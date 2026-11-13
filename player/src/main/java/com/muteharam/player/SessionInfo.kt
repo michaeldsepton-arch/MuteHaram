@@ -14,6 +14,7 @@ data class SessionInfo(
     val ageSeconds: Long = 0,            // how long ago the PC prepared it
     val mode: String = "music",         // "music" = cleaned live by the PC, "precleaned" = from the library
     val audio: String = "/audio.wav",   // where the PC serves the cleaned sound (a library film: compressed, .opus)
+    val siteSubsFull: Boolean = true,    // false: the website has no full subtitles (none, or only a "forced" track)
 ) {
     /** The kind of sound the PC sends: how the app tells the PC's cleaned sound from the film's own (with music). */
     val pcAudioMime: String
@@ -43,6 +44,7 @@ data class SessionInfo(
                 startSeconds = o.optDouble("start", 0.0).let { if (it.isNaN() || it < 0) 0.0 else it },
                 ageSeconds = o.optLong("age_s", 0),
                 mode = o.optString("mode").let { if (it == "precleaned") it else "music" },
+                siteSubsFull = o.optBoolean("site_subs_full", true),
                 audio = o.optString("audio", "/audio.wav").let { if (it.startsWith("/")) it else "/audio.wav" },
             )
         }
