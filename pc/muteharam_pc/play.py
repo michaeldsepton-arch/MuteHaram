@@ -977,7 +977,7 @@ def run(argv=None):
     problem = None
     audio_url = None
 
-    # the graphics card is shared by the music removal, the subtitles (Cohere) and the scene check (Ollama):
+    # the graphics card is shared by the music removal, the subtitles (Whisper) and the scene check (Ollama):
     # PyTorch would otherwise keep up to 7 GB of it for itself and slow the others down (measured)
     try:
         import torch

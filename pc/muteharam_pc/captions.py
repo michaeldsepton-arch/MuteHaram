@@ -1,13 +1,12 @@
 """
 Subtitles made by MuteHaram itself.
 
-  * Cohere Transcribe (the model the translation project uses: CohereLabs/cohere-transcribe-arabic-07-2026, which
-    does English and Arabic), on the graphics card in 4-bit: 1.5 GB, so it fits beside the music removal and the
-    scene check (in 16-bit it takes 4 GB and everything slows down). Measured: a minute of film in ~10 s, the same
-    text as 16-bit. Without a graphics card (or bitsandbytes): Whisper "small" on the processor, as before.
-  * Cohere gives text only, no times: a speech detector (Silero VAD, from faster-whisper) cuts the sound into
-    spoken pieces of at most 7 s, each piece is transcribed on its own (its times are the subtitle's), and a long
-    piece is split into subtitle-sized lines timed by their share of its letters.
+  * Whisper large-v3 (the model the translation project uses), on the graphics card in 8-bit (~1.6 GB, beside the
+    music removal and the scene check). Measured against captions written by people (a 7.5 min BBC drama scene):
+    6.6 % of words wrong, Cohere Transcribe 16.9 % ("mom home" for "mum who", words dropped); ~3 s per minute.
+    Guards against text invented over noise (as in the translation project): pieces the model itself rates as
+    probably not speech, or as repeating itself, are dropped.
+  * Backups: Cohere Transcribe (4-bit, graphics card), then Whisper "small" on the processor.
   * Made from the CLEANED sound where it is ready (no music in the way), else from the original.
 
     lines = transcribe(audio_16k_mono, offset_s)  -> [[start_s, end_s, "text"], ...]   ("\\n" = second line)
@@ -23,19 +22,31 @@ import time
 import numpy as np
 
 COHERE = "CohereLabs/cohere-transcribe-arabic-07-2026"
-WHISPER = "small"               # the fallback (Systran/faster-whisper-small, on this PC already)
+WHISPER_GPU = "large-v3"        # the main one (Systran/faster-whisper-large-v3, on this PC already)
+WHISPER = "small"               # the last fallback, on the processor (Systran/faster-whisper-small)
 RATE = 16000
 LINE = 42                       # letters on one subtitle line (the usual for films); two lines at most
 MAX_PIECE_S = 7.0
 _model = None
 _lock = threading.Lock()
 _which = None                   # "cohere" / "whisper"
+_big = False                    # Whisper large-v3 on the graphics card (not the small one on the processor)
 
 
 def _load(log=print):
-    global _model, _which
+    global _model, _which, _big
     if _model is not None:
         return _model
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            raise RuntimeError("no graphics card")
+        from faster_whisper import WhisperModel
+        _model, _which, _big = WhisperModel(WHISPER_GPU, device="cuda", compute_type="int8"), "whisper", True
+        log(f"captions: Whisper {WHISPER_GPU} ready (graphics card, 8-bit)")
+        return _model
+    except Exception as ex:
+        log(f"captions: Whisper {WHISPER_GPU} not available on the graphics card ({ex!r}); trying Cohere")
     try:
         import torch
         if not torch.cuda.is_available():
@@ -114,6 +125,28 @@ def split_lines(text, start, end):
     return out
 
 
+def word_lines(words, offset_s=0.0):
+    """Timed words [(start, end, " word"), ...] -> subtitles timed by their own words: a new one at a sentence end
+    (once it has some words), at a pause, or when two lines are full."""
+    out, cur = [], []
+
+    def flush():
+        if cur:
+            text = " ".join("".join(w[2] for w in cur).split())
+            text = re.sub(r"([a-z]{2}[.!?])([a-zA-Z])", lambda m: m.group(1) + " " + m.group(2).upper(), text)
+            out.append([round(float(offset_s + cur[0][0]), 2), round(float(offset_s + cur[-1][1]), 2), two_lines(text)])
+            cur.clear()
+    for w in words:
+        if cur:
+            length = len("".join(x[2] for x in cur).strip())
+            if (w[0] - cur[-1][1] > 0.8 or length + len(w[2]) > 2 * LINE
+                    or (cur[-1][2].rstrip().endswith((".", "!", "?")) and length >= LINE // 2)):
+                flush()
+        cur.append(w)
+    flush()
+    return out
+
+
 def two_lines(text):
     """Break a subtitle into two balanced lines when it is longer than one."""
     if len(text) <= LINE:
@@ -134,11 +167,21 @@ def transcribe(audio, offset_s=0.0, lang="en", log=print):
     with _lock:                                  # one at a time (the model is shared)
         _load(log)
         if _which == "whisper":
-            segs, _ = _model.transcribe(audio, beam_size=1, vad_filter=True, condition_on_previous_text=False,
-                                        language=lang)
+            big = _big
+            segs, _ = _model.transcribe(audio, beam_size=5 if big else 1, vad_filter=True,
+                                        condition_on_previous_text=False, language=lang, word_timestamps=True)
             out = []
             for s in segs:
-                out += split_lines(s.text, offset_s + s.start, offset_s + s.end)
+                text = s.text.strip()
+                if not text or text.lower() in JUNK or (s.end - s.start < 1.0 and text.lower().strip(" .!?,") in JUNK):
+                    continue
+                # invented text: the model itself says it is probably not speech, or it repeats itself
+                if (s.no_speech_prob > 0.6 and s.avg_logprob < -1.0) or s.compression_ratio > 2.4:
+                    continue
+                if s.words:
+                    out += word_lines([(w.start, w.end, w.word) for w in s.words], offset_s)
+                else:
+                    out += split_lines(text, offset_s + s.start, offset_s + s.end)
             return out
         out = []
         ps = pieces(audio)
