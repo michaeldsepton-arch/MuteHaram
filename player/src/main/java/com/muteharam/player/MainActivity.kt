@@ -127,6 +127,7 @@ class MainActivity : AppCompatActivity() {
     private var shownMade = -1
     private var shownSub: String? = null                    // the subtitle on screen now (own subtitles)
     private lateinit var subsButton: TextView
+    private lateinit var musicHereButton: TextView
     @Volatile
     private var toldPcSubs = ""                             // the choice the PC was last told
     @Volatile
@@ -286,6 +287,28 @@ class MainActivity : AppCompatActivity() {
             addView(col, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
             addView(homeFooter, FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM).apply { bottomMargin = dp(18) })
         }
+    }
+
+    /** Music slipped through: tell the PC where (it measures that spot and keeps the numbers, to improve the cleaning). */
+    private fun reportMusic() {
+        val p = player ?: return
+        if (curHost.isEmpty()) return
+        val pos = p.currentPosition
+        val host = curHost
+        val tok = curToken
+        musicHereButton.text = "♪  Noted, thank you"
+        musicHereButton.background = pill(0xCC15524F.toInt(), TEAL)
+        ui.postDelayed({
+            musicHereButton.text = "♪  Music here"
+            musicHereButton.background = pill(0xCC081A2B.toInt(), TEAL_DIM)
+        }, 2500)
+        Thread {
+            try {
+                httpGet("http://" + host + ":47804/music_here?t=" + URLEncoder.encode(tok, "UTF-8") + "&pos=" + pos)
+            } catch (_: Exception) {
+                ui.post { musicHereButton.text = "♪  Could not reach the PC" }
+            }
+        }.start()
     }
 
     /** Next strictness: the PC cleans again from here, then the film restarts at the same spot with that sound. */
@@ -907,6 +930,23 @@ class MainActivity : AppCompatActivity() {
                 Gravity.TOP or Gravity.START
             ).apply { setMargins(dp(16), dp(172), dp(16), dp(16)) }
         )
+        // "Music here": music slipped through just now. The PC notes this moment (numbers only, no sound kept)
+        musicHereButton = TextView(this).apply {
+            text = "♪  Music here"
+            setTextColor(CREAM)
+            textSize = 14f
+            setPadding(dp(16), dp(9), dp(16), dp(9))
+            background = pill(0xCC081A2B.toInt(), TEAL_DIM)
+            visibility = View.GONE
+            setOnClickListener { reportMusic() }
+        }
+        root.addView(
+            musicHereButton,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            ).apply { setMargins(dp(16), dp(224), dp(16), dp(16)) }
+        )
         setContentView(root)
         // Settings and the sound-mode button appear together with the player's controls (tap the picture) and fade with them.
         playerView.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
@@ -1166,6 +1206,7 @@ class MainActivity : AppCompatActivity() {
         levelButton.visibility = if (show && current != null && live) View.VISIBLE else View.GONE
         if (live) levelButton.text = "♪  Music removal: " + LEVEL_NAMES[pcLevel]
         subsButton.visibility = if (show && current != null) View.VISIBLE else View.GONE
+        musicHereButton.visibility = if (show && current != null) View.VISIBLE else View.GONE
         subsButton.text = "CC  Subtitles: " + SUBS_NAMES[subsMode()] +
             if (shownSubs() != subsMode()) " (none on the site: MuteHaram's)" else ""
         subsButton.background = pill(if (subsMode() == "off") 0xCC081A2B.toInt() else 0xCC15524F.toInt(),

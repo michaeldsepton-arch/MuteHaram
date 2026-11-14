@@ -55,4 +55,20 @@ mp.add_forced_key_binding("l", "muteharam-strength", function()
     end)
 end)
 
-mp.add_timeout(2, function() mp.osd_message("Music removal: " .. names[level] .. "   (L to change)", 4) end)
+mp.add_timeout(2, function() mp.osd_message("Music removal: " .. names[level] .. "   (L to change · H if you hear music)", 4) end)
+
+-- H: "music here" - music slipped through just now. The PC notes this moment (numbers only, no sound is kept) so
+-- the cleaning can be improved later.
+mp.add_forced_key_binding("h", "muteharam-music-here", function()
+    local pos = mp.get_property_number("time-pos") or 0
+    mp.command_native_async({
+        name = "subprocess", playback_only = false, capture_stdout = true,
+        args = { "curl", "-s", "-m", "10", string.format("http://127.0.0.1:%s/music_here?pos=%d", port, math.floor(pos * 1000)) },
+    }, function(ok, res)
+        if ok and res and res.status == 0 and (res.stdout or ""):find('"ok": true', 1, true) then
+            mp.osd_message("♪ Music here: noted, thank you (it helps improve the cleaning)", 3)
+        else
+            mp.osd_message("MuteHaram: could not note it", 3)
+        end
+    end)
+end)

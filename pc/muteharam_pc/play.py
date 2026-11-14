@@ -284,6 +284,18 @@ class TabletFront:
         once the sound at that point is ready (the tablet then reloads its sound)."""
         return set_strength(self.hub, q, self.log)
 
+    def music_route(self, q):
+        """/music_here?pos=<ms> : the viewer heard music slip through just before this point (numbers are kept, to
+        improve the cleaning; no sound is saved)."""
+        from .music_reports import report
+        if self.hub is None:
+            return {"ok": False, "error": "not playing yet"}
+        pos = (q.get("pos") or [""])[0]
+        if not pos.isdigit():
+            return {"ok": False, "error": "no position"}
+        return report(self.hub, int(pos) / 1000.0, {"title": (self.doc or {}).get("title", ""), "key": self.resume_key},
+                      self.log)
+
     def subs_route(self, q):
         """/subs?m=site|own|off : which subtitles; own = MuteHaram makes them for the whole film (remembered)."""
         return set_subtitles(self.captions, q, self.log)
@@ -752,7 +764,7 @@ def start_tablet_front(a, log):
         try:
             srv = make_server(front, host="0.0.0.0", port=a.tablet_port, token=load_or_create_token(),
                               routes={"/session.json": front.session_json, "/level": front.level_route,
-                                      "/subs": front.subs_route})
+                                      "/subs": front.subs_route, "/music_here": front.music_route})
             break
         except OSError:
             if attempt == 9:
@@ -1104,8 +1116,15 @@ def run(argv=None):
                     if who is not None:
                         who.follow(float(t))
             return {"ok": True}
+        def music_here(q):
+            from .music_reports import report
+            pos = (q.get("pos") or [""])[0]
+            if not pos.isdigit():
+                return {"ok": False, "error": "no position"}
+            return report(hub, int(pos) / 1000.0, {"title": "", "key": f"{a.page or a.url}"}, log)
         srv = make_server(hub, routes={"/level": lambda q: set_strength(hub, q, log),
-                                       "/subs": lambda q: set_subtitles(caps, q, log), "/pos": scene_pos})
+                                       "/subs": lambda q: set_subtitles(caps, q, log), "/pos": scene_pos,
+                                       "/music_here": music_here})
         audio_url = f"http://127.0.0.1:{srv.server_address[1]}/audio.wav"
         log("cleaned audio at", audio_url)
     if a.no_player:

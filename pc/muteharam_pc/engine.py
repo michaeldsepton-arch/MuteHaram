@@ -274,6 +274,7 @@ class Session:
         self.fallback = fallback
         self.level = level if level in LEVELS else "normal"
         self.stepped_up = 0                    # auto: blocks cleaned again at a stricter level
+        self.picked = {}                       # block -> what cleaned it (for "music here" reports)
         self.fallbacks = 0
         self.log(f"engine: {self.duration:.0f}s of audio, window {window_s:g}s / hop {hop_s:g}s on {self.device}, "
                  f"{'separate L/R' if self.stereo_sep else 'mono mix'} processing, mode {mode}")
@@ -574,6 +575,7 @@ class Session:
                     if self._stop:
                         return
                     self.store[b * self.hop:(b + 1) * self.hop] = cleaned
+                    self.picked[b] = getattr(self, "_last_pick", None)
                     dt = time.time() - t0
                     bad = False
                 with self.cv:
@@ -618,6 +620,7 @@ class Session:
         """x: [win, 2] float32 -> cleaned centre [hop, 2] int16, as strict as self.level says."""
         c = slice(self.margin, self.margin + self.hop)
         level = self.level
+        self._last_pick = {"level": level, "used": level}
         try:
             if level in ("strong", "strongest"):
                 st = self._bandit_safe(x)
@@ -646,6 +649,8 @@ class Session:
                         if m2 < AUTO_MUSIC:
                             break
                     y = pick
+                    self._last_pick = {"level": level, "used": what, "music_after_normal": round(heard, 3),
+                                       "voice": round(voice, 3)}
                     self.stepped_up += 1
                     if self.stepped_up <= 30 or self.stepped_up % 50 == 0:
                         self.log(f"auto: music still heard ({heard:.2f}, voice {voice:.2f}) -> {what}"
