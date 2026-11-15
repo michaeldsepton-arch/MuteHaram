@@ -39,6 +39,10 @@ class MediaSource:
         self.ffprobe = ffprobe
         self._picky_on = False   # allow "disguised" HLS segments (.jpg etc.), see _http_args
         self.start_time = None   # the stream's own clock at the film's start (from duration()), see _timing
+        # The sound is read by counting its samples instead of following the stream's clock (see _timing): set once
+        # the stream's clock jumps (Session._fill). Measured: Popcorn Movies' Young Sherlock restarts its clock in
+        # every piece for 25 s at 2:58; following the clock then filled everything from 3:24 on with silence.
+        self.count_samples = False
 
     _picky_supported = {}
 
@@ -112,6 +116,8 @@ class MediaSource:
         16 s off or gives silence. A start inside pieces the website refuses is caught in decoder() instead.)"""
         # dts_delta_threshold: ffmpeg treats a jump in the stream's clock of more than 10 s as a glitch and closes
         # it up. When the website refuses minutes of pieces that moved everything after 50 s+ too early.
+        if self.count_samples:
+            return (["-ss", f"{max(0.0, start_seconds):.3f}"], "asetpts=N/SR/TB,aresample=first_pts=0")
         return (["-dts_delta_threshold", "100000", "-ss", f"{max(0.0, start_seconds):.3f}"],
                 "aresample=async=1:first_pts=0")
 
@@ -178,6 +184,7 @@ class MediaSource:
         # episode 5 after 29 min). Such a start is not trusted (see Session._read_until_inner).
         proc.got_audio = False
         proc.skipped_early = False
+        proc.clock_jumped = False
 
         def drain():
             for line in proc.stderr:
@@ -185,6 +192,8 @@ class MediaSource:
                 proc.err_tail = (proc.err_tail + [text])[-5:]
                 if "skipping" in text.lower() and not proc.got_audio:
                     proc.skipped_early = True
+                if "timestamp discontinuity" in text.lower():
+                    proc.clock_jumped = True     # the stream's clock jumped: see Session._fill
                 if log and shown[0] < 20 and any(k in text.lower() for k in ("segment", "skip", "discontinu", "non-monoton", "failed")):
                     shown[0] += 1
                     log("source: " + text[:200])
@@ -524,6 +533,16 @@ class Session:
             self._read_until(e)
             if self._stop:
                 return False
+            if (getattr(self._dec, "clock_jumped", False) and hasattr(self.src, "count_samples")
+                    and not self.src.count_samples):
+                # the stream's clock jumped here: following it can turn the rest of the film into silence. From this
+                # part on, read the sound by counting its samples (the parts before are already right).
+                time.sleep(0.3)
+                self.src.count_samples = True
+                self.log(f"source: the stream's clock jumps near {need_s / SAMPLE_RATE:.0f} s; from here the sound is "
+                         f"read by counting samples")
+                self._restart(need_s)
+                self._read_until(e)
             missing = need_end - self._dec_end if need_end > need_s else 0
             if missing <= 2 * SAMPLE_RATE:       # (a small shortfall at the very end is normal)
                 return True
