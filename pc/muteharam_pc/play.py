@@ -984,6 +984,18 @@ def run(argv=None):
     if a.tablet:
         front, tablet_srv = start_tablet_front(a, log)
         front.stage("Opening the film on the PC")
+    if (not a.no_player or a.tablet) and not a.preclean:
+        # the picture models and the subtitle model take ~1-2 min to load on this PC: start now, while the film is
+        # being opened (they used to start at step 4, one after another)
+        try:
+            if S_SETTINGS().get("scenes", True):
+                from . import scenes
+                scenes.prewarm(log, S_SETTINGS().get("scenes_model", scenes.MODEL),
+                               S_SETTINGS().get("scenes_gpu_layers", scenes.GPU_LAYERS))
+            from . import captions
+            captions.prewarm(log)
+        except Exception as ex:
+            log(f"could not start loading the models ahead ({ex!r})")
     r = resolve(a.url, headers, cfg, log, a.sub_langs)
     session = srv = None
     problem = None

@@ -66,6 +66,17 @@ def _load(log=print):
     return _model
 
 
+def prewarm(log=print):
+    """Load the subtitle model in the background as soon as a film is sent (Whisper large-v3: ~45 s on this PC)."""
+    def work():
+        with _lock:
+            try:
+                _load(log)
+            except Exception as ex:
+                log(f"captions: could not load ahead ({ex!r})")
+    threading.Thread(target=work, daemon=True).start()
+
+
 def pieces(audio):
     """Where people speak: [(start_s, end_s), ...] (at most 7 s each)."""
     from faster_whisper.vad import VadOptions, get_speech_timestamps

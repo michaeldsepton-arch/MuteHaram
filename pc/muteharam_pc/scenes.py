@@ -206,7 +206,7 @@ class Detector:
         import cv2
         ok, jpg = cv2.imencode(".jpg", frame[:, :, ::-1], [cv2.IMWRITE_JPEG_QUALITY, 85])
         body = {"model": self.model, "prompt": QUESTION, "images": [base64.b64encode(jpg.tobytes()).decode()],
-                "stream": False, "think": False, "keep_alive": "30m", "options": {"temperature": 0, "num_predict": 3}}
+                "stream": False, "think": False, "keep_alive": "3h", "options": {"temperature": 0, "num_predict": 3}}
         if self.gpu_layers is not None:
             body["options"]["num_gpu"] = int(self.gpu_layers)
         try:
@@ -227,6 +227,38 @@ class Detector:
     def warm_up(self):
         """Load the model now (the first answer takes ~45 s), so live checking starts on time."""
         self._ask(np.zeros((H, W, 3), np.uint8))
+
+
+_PRE = {"det": None, "thread": None, "key": None}
+
+
+def prewarm(log=print, model=MODEL, gpu_layers=GPU_LAYERS):
+    """Load the picture models in the background as soon as a film is sent (measured on this PC: the vision model's
+    first answer 52 s when not loaded, CLIP 30 s with its library), so the scene check can start at once later."""
+    def work():
+        try:
+            det = Detector(model, log, gpu_layers)
+            det.warm_up()
+            det.clip(np.zeros((H, W, 3), np.uint8))
+            _PRE["det"] = det
+        except Exception as ex:
+            log(f"scenes: could not load the picture models ahead ({ex!r})")
+    if _PRE["thread"] is None:
+        _PRE["key"] = (model, gpu_layers)
+        _PRE["thread"] = threading.Thread(target=work, daemon=True)
+        _PRE["thread"].start()
+
+
+def _ready_detector(model, log, gpu_layers):
+    """The detector loaded by prewarm() (waits for it), or a new one."""
+    th = _PRE["thread"]
+    if th is not None and _PRE["key"] == (model, gpu_layers):
+        th.join()
+        det, _PRE["det"] = _PRE["det"], None
+        if det is not None:
+            det.log = log
+            return det, True
+    return Detector(model, log, gpu_layers), False
 
 
 class SceneScanner:
@@ -404,8 +436,9 @@ class SceneScanner:
 
     def _run(self):
         try:
-            self.det = Detector(self.model, self.log, self.gpu_layers)
-            self.det.warm_up()
+            self.det, warm = _ready_detector(self.model, self.log, self.gpu_layers)
+            if not warm:
+                self.det.warm_up()
             self.ready = True
             if not self.det.vlm_ok:
                 self.log("scenes: Ollama is not running; only NudeNet checks (nudity only, no kissing)")
