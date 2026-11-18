@@ -1004,6 +1004,12 @@ def run(argv=None):
         sess = Session(src, duration=rr["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
                        device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
                        channels_mode=a.channels, mode=a.mode, level=S.get("strength", "normal"))
+        if a.start > 0 and sess.duration and a.start > sess.duration - 60:
+            # the website's player was still at the end of the PREVIOUS episode (one page shows several episodes):
+            # starting there would wait forever for sound after this episode's end
+            log(f"[tablet] the website's player was at {int(a.start // 60)}:{int(a.start % 60):02d}, at or past the end of "
+                f"this {int(sess.duration // 60)} min episode (the previous one?): starting from the beginning")
+            a.start = 0.0
         try:
             ok, why = src.probe(max(0.0, min(a.start, (rr["duration"] or 1e9) - 3)))
             if not ok:
