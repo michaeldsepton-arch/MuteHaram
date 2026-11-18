@@ -48,7 +48,8 @@ CLIP_COVER = ["two people kissing on the lips", "a couple kissing passionately",
 CLIP_OTHER = ["people talking to each other", "a man and a woman talking face to face", "a person's face in close up",
               "people walking in a street", "a room in a house", "a landscape", "a car or a vehicle",
               "a group of people", "text on a screen", "a dark scene", "people fighting", "people at a table eating",
-              "a person hugging another person", "people in an office"]
+              "a person hugging another person", "people in an office", "a person lying in bed",
+              "a person sleeping in bed", "a sick person in bed", "a person sitting on a bed"]
 CLIP_FLAG = 0.30          # this much of CLIP's choice on the "cover" group: ask the vision model
 CLIP_SURE = 0.60          # inside a scene already found: this much counts as "still going" without asking
 # Measured: on a film with many such scenes CLIP was this sure on >10 % of its seconds (a larger model agreed on
@@ -476,9 +477,15 @@ class SceneScanner:
             if in_scene:
                 # still going? a clear sign from the fast checks is enough; otherwise the vision model decides
                 pos = nn == "nudity" or c >= CLIP_SURE or self.det.ask(frame, t, vec)
-            elif nude_sure or strong_run >= CLIP_RUN:
-                pos = True                             # the fast checks are sure enough on their own
-                why = "NudeNet: nudity" if nude_sure else "CLIP very sure for 3 s"
+            elif nude_sure:
+                pos = True                             # NudeNet twice (or with CLIP): sure enough on its own
+                why = "NudeNet: nudity"
+            elif strong_run >= CLIP_RUN:
+                # CLIP very sure for 3 s: the vision model must agree. CLIP alone covered a mother lying in bed for
+                # 45 s (Young Sherlock-era drama, measured: CLIP 0.70-0.95 "a sexual scene in bed" for 43 s, the
+                # vision model asked 20 times there, "no" every time).
+                pos = self.det.ask(frame, t, vec)
+                why = f"CLIP very sure for 3 s, and the vision model agreed"
             else:
                 ask = nn != "clear" or c >= CLIP_FLAG or int(t) % self.BACKSTOP == 0
                 pos = ask and self.det.ask(frame, t, vec)
