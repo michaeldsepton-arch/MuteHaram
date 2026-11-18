@@ -120,6 +120,39 @@ def classify(url, headers):
                                    f"it starts with {body[:48]!r}{extra}")
 
 
+def sound_only(url, headers, log=print):
+    """A main playlist that lists the sound as its own playlists (EXT-X-MEDIA TYPE=AUDIO with a URI): the address of
+    the sound alone (the default one, else English, else the first). Opening the main playlist makes ffmpeg fetch a
+    piece of EVERY picture quality first (vixsrc: 1080p, 720p, 480p) before any sound: 20 s+ on a busy connection,
+    every time the stream is reopened, which made the PC give up and loop at 25 min of Young Sherlock.
+    Anything else: the same address."""
+    import re
+    from urllib.parse import urljoin
+    if not url.startswith(("http://", "https://")):
+        return url
+    try:
+        st, ct, data, _ = fetch_head(url, headers, nbytes=65536)
+        text = data.decode("utf-8", "replace") if st and st < 400 else ""
+        if "#EXT-X-STREAM-INF" not in text:
+            return url
+        media = [ln for ln in text.splitlines() if ln.startswith("#EXT-X-MEDIA:") and "TYPE=AUDIO" in ln and "URI=" in ln]
+        if not media:
+            return url
+
+        def attr(ln, k):
+            m = re.search(k + r'=("([^"]*)"|[^,]*)', ln)
+            return (m.group(2) if m and m.group(2) is not None else m.group(1) if m else "") or ""
+        pick = (next((m for m in media if attr(m, "DEFAULT").upper() == "YES"), None)
+                or next((m for m in media if attr(m, "LANGUAGE").lower().startswith("en")), None) or media[0])
+        audio = urljoin(url, attr(pick, "URI"))
+        log(f"sound: using the site's {attr(pick, 'NAME') or attr(pick, 'LANGUAGE') or 'main'} sound playlist on its own "
+            f"(no picture downloads)")
+        return audio
+    except Exception as ex:
+        log(f"sound: could not look inside the main playlist ({ex!r}); using it as it is")
+        return url
+
+
 def ui_error(message):
     """Tell the user about a problem even when we were started without a console
     (by the browser extension's helper): a message box on Windows."""
@@ -1012,7 +1045,7 @@ def run(argv=None):
 
     def build(rr):
         """Open the media for the AI and check that audio can really be decoded."""
-        src = MediaSource(rr["media_url"], rr["headers"], cfg["ffmpeg"], cfg["ffprobe"])
+        src = MediaSource(sound_only(rr["media_url"], rr["headers"], log), rr["headers"], cfg["ffmpeg"], cfg["ffprobe"])
         sess = Session(src, duration=rr["duration"], window_s=a.window, hop_s=a.hop, music_gain=a.gain,
                        device="cpu" if a.cpu else None, models_dir=cfg["models_dir"], log=log,
                        channels_mode=a.channels, mode=a.mode, level=S.get("strength", "normal"))

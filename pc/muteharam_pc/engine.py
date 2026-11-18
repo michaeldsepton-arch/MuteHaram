@@ -295,6 +295,7 @@ class Session:
                                shape=(self.nblocks * self.hop, CHANNELS))
         self.ready = np.zeros(self.nblocks, dtype=bool)
         self.bad = np.zeros(self.nblocks, dtype=bool)     # parts that could not be cleaned -> original audio
+        self._bad_at, self._bad_tries = {}, {}             # when a part failed, how often it was tried again
         self.cv = threading.Condition()
         self.want = max(0, min(start_block, self.nblocks - 1))   # block the player most recently asked for
         self.error = None
@@ -379,6 +380,8 @@ class Session:
             b = f // self.hop
             try:
                 blk = self.wait_block(b, timeout=self.patience)
+                if self.bad[b] and self._retry_bad(b):
+                    blk = self.wait_block(b, timeout=self.patience)
                 if self.bad[b]:
                     blk = self._raw_block(b, "this part could not be cleaned")
             except (TimeoutError, RuntimeError) as ex:
@@ -388,6 +391,22 @@ class Session:
             out.append(np.array(blk[lo:hi]))     # a COPY: the cache file may be closed right after
             f = b * self.hop + hi
         return np.concatenate(out) if out else np.zeros((0, CHANNELS), np.int16)
+
+    def _retry_bad(self, b):
+        """A part that could not be read (the website stalled for a moment) is tried again when the player gets
+        there, up to twice, at least 15 s after it failed: one hiccup must not leave the rest of the film silent.
+        -> True if it is being tried again."""
+        with self.cv:
+            tries = self._bad_tries.get(b, 0)
+            if self._stop or tries >= 2 or time.time() - self._bad_at.get(b, 0) < 15:
+                return False
+            self._bad_tries[b] = tries + 1
+            self.bad[b] = False
+            self.ready[b] = False
+            self.want = b
+            self.cv.notify_all()
+        self.log(f"block {b + 1}: trying again to read and clean it (try {tries + 1})")
+        return True
 
     def _raw_block(self, b, why):
         self.fallbacks += 1
@@ -477,14 +496,18 @@ class Session:
         self._eof = False
 
     STALL_S = 20.0
+    STALL_FIRST_S = 60.0
 
     def _watchdog(self):
         """A stream that stops delivering without breaking (a stalled download) would leave the player waiting
         forever: after STALL_S without any sound, drop the connection; the reader then reopens the stream."""
         while not self._stop:
             time.sleep(2.0)
-            if self._reading and self._dec is not None and time.time() - self._last_bytes > self.STALL_S:
-                self.log(f"source: no sound from the stream for {self.STALL_S:.0f}s, reconnecting")
+            # (a stream that was just opened gets longer: some sites' streams take 20 s+ before the first sound when
+            # the connection is busy, and reconnecting then only starts the wait again; seen on vixsrc at 25 min)
+            limit = self.STALL_S if getattr(self._dec, "got_audio", True) else self.STALL_FIRST_S
+            if self._reading and self._dec is not None and time.time() - self._last_bytes > limit:
+                self.log(f"source: no sound from the stream for {limit:.0f}s, reconnecting")
                 self._last_bytes = time.time()
                 self._kill_decoder()
 
@@ -599,6 +622,8 @@ class Session:
                     bad = False
                 with self.cv:
                     self.bad[b] = bad
+                    if bad:
+                        self._bad_at[b] = time.time()
                     self.ready[b] = True
                     self.cv.notify_all()
                 last = b
@@ -617,6 +642,7 @@ class Session:
                 if b is not None:
                     with self.cv:
                         self.bad[b] = True
+                        self._bad_at[b] = time.time()
                         self.ready[b] = True
                         self.cv.notify_all()
                     last = b
